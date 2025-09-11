@@ -34,7 +34,9 @@ type Langfuse interface {
 	CreateTrace(body *TraceEventBody) (string, error)
 	CreateSpan(body *SpanEventBody) (string, error)
 	EndSpan(body *SpanEventBody) error
+	UpdateSpan(body *SpanEventBody) error
 	CreateGeneration(body *GenerationEventBody) (string, error)
+	UpdateGeneration(body *GenerationEventBody) error
 	EndGeneration(body *GenerationEventBody) error
 	CreateEvent(body *EventEventBody) (string, error)
 	Flush()
@@ -90,6 +92,10 @@ func NewLangfuse(
 
 type langfuseIns struct {
 	tm *taskManager
+}
+
+func (l *langfuseIns) UpdateSpan(body *SpanEventBody) error {
+	return l.EndSpan(body)
 }
 
 // CreateTrace creates a new trace in Langfuse
@@ -184,6 +190,10 @@ func (l *langfuseIns) EndGeneration(body *GenerationEventBody) error {
 		Type: EventTypeGenerationUpdate,
 		Body: eventBodyUnion{Generation: body},
 	})
+}
+
+func (l *langfuseIns) UpdateGeneration(body *GenerationEventBody) error {
+	return l.EndGeneration(body)
 }
 
 // CreateEvent creates a new custom event

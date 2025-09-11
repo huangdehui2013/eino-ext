@@ -229,10 +229,28 @@ type SpanEventBody struct {
 }
 
 type Usage struct {
+	Input      int       `json:"input,omitempty"`
+	Output     int       `json:"output,omitempty"`
+	Total      int       `json:"total,omitempty"`
+	Unit       UsageUnit `json:"unit,omitempty"`
+	InputCost  float64   `json:"inputCost,omitempty"`
+	OutputCost float64   `json:"outputCost,omitempty"`
+	TotalCost  float64   `json:"totalCost,omitempty"`
+
 	PromptTokens     int `json:"promptTokens,omitempty"`
 	CompletionTokens int `json:"completionTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
 }
+
+type UsageUnit string
+
+const (
+	ModelUsageUnitCharacters   UsageUnit = "CHARACTERS"
+	ModelUsageUnitTokens       UsageUnit = "TOKENS"
+	ModelUsageUnitMilliseconds UsageUnit = "MILLISECONDS"
+	ModelUsageUnitSeconds      UsageUnit = "SECONDS"
+	ModelUsageUnitImages       UsageUnit = "IMAGES"
+)
 
 type GenerationEventBody struct {
 	BaseObservationEventBody
@@ -245,7 +263,8 @@ type GenerationEventBody struct {
 	PromptName          string            `json:"promptName,omitempty"`
 	PromptVersion       int               `json:"promptVersion,omitempty"`
 	ModelParameters     any               `json:"modelParameters,omitempty"`
-	Usage               *Usage            `json:"usage,omitempty"`
+	Usage               Usage             `json:"usage,omitempty"`
+	UsageDetails        any               `json:"usageDetails,omitempty"`
 }
 
 type EventEventBody struct {
