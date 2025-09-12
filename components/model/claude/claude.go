@@ -720,7 +720,12 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 		result.ResponseMeta = &schema.ResponseMeta{
 			FinishReason: string(e.Delta.StopReason),
 			Usage: &schema.TokenUsage{
+				PromptTokens:     int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens),
 				CompletionTokens: int(e.Usage.OutputTokens),
+				PromptTokenDetails: schema.PromptTokenDetails{
+					CachedTokens: int(e.Usage.CacheReadInputTokens),
+				},
+				TotalTokens: int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens + e.Usage.OutputTokens),
 			},
 		}
 		return result, nil
