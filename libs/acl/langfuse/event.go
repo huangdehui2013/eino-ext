@@ -263,7 +263,7 @@ type GenerationEventBody struct {
 	PromptName          string            `json:"promptName,omitempty"`
 	PromptVersion       int               `json:"promptVersion,omitempty"`
 	ModelParameters     any               `json:"modelParameters,omitempty"`
-	Usage               Usage             `json:"usage,omitempty"`
+	Usage               *Usage            `json:"usage,omitempty"`
 	UsageDetails        any               `json:"usageDetails,omitempty"`
 }
 
