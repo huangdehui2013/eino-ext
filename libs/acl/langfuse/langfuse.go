@@ -17,6 +17,7 @@
 package langfuse
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -32,6 +33,7 @@ const (
 //go:generate mockgen -source=langfuse.go -destination=./mock/langfuse_mock.go -package=mock Langfuse
 type Langfuse interface {
 	CreateTrace(body *TraceEventBody) (string, error)
+	UpdateTrace(body *TraceEventBody) (string, error)
 	CreateSpan(body *SpanEventBody) (string, error)
 	EndSpan(body *SpanEventBody) error
 	UpdateSpan(body *SpanEventBody) error
@@ -92,6 +94,17 @@ func NewLangfuse(
 
 type langfuseIns struct {
 	tm *taskManager
+}
+
+func (l *langfuseIns) UpdateTrace(body *TraceEventBody) (string, error) {
+	if len(body.ID) == 0 {
+		return "", fmt.Errorf("trace ID cannot be empty")
+	}
+	return body.ID, l.tm.push(&event{
+		ID:   uuid.NewString(),
+		Type: EventTypeTraceCreate,
+		Body: eventBodyUnion{Trace: body},
+	})
 }
 
 func (l *langfuseIns) UpdateSpan(body *SpanEventBody) error {

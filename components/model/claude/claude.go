@@ -104,6 +104,7 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		topK:                   config.TopK,
 		topP:                   config.TopP,
 		disableParallelToolUse: config.DisableParallelToolUse,
+		cacheControl:           config.CacheControl,
 	}, nil
 }
 
@@ -183,6 +184,8 @@ type Config struct {
 	HTTPClient *http.Client `json:"http_client"`
 
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use"`
+
+	CacheControl bool `json:"cache_control"`
 }
 
 type Thinking struct {
@@ -204,6 +207,8 @@ type ChatModel struct {
 	origTools              []*schema.ToolInfo
 	toolChoice             *schema.ToolChoice
 	disableParallelToolUse *bool
+
+	cacheControl bool
 }
 
 func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (message *schema.Message, err error) {
@@ -215,7 +220,7 @@ func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts
 		}
 	}()
 
-	msgParam, err := cm.genMessageNewParams(input, opts...)
+	msgParam, err := cm.genMessageNewParams(input, cm.cacheControl, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +245,7 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 		}
 	}()
 
-	msgParam, err := cm.genMessageNewParams(input, opts...)
+	msgParam, err := cm.genMessageNewParams(input, cm.cacheControl, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +424,7 @@ func preProcessMessages(input []*schema.Message) ([]*schema.Message, []*schema.M
 	return input[:userMsgIdx], input[userMsgIdx:], nil
 }
 
-func (cm *ChatModel) genMessageNewParams(input []*schema.Message, opts ...model.Option) (
+func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl bool, opts ...model.Option) (
 	anthropic.MessageNewParams, error) {
 	if len(input) == 0 {
 		return anthropic.MessageNewParams{}, fmt.Errorf("input is empty")
@@ -519,9 +524,15 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, opts ...model.
 	// Convert messages
 	var systemTextBlocks []anthropic.TextBlockParam
 	for _, m := range system {
-		systemTextBlocks = append(systemTextBlocks, anthropic.TextBlockParam{
+		textBlockParam := anthropic.TextBlockParam{
 			Text: m.Content,
-		})
+		}
+		if cacheControl {
+			textBlockParam.CacheControl = anthropic.CacheControlEphemeralParam{
+				Type: "ephemeral",
+			}
+		}
+		systemTextBlocks = append(systemTextBlocks, textBlockParam)
 	}
 	if len(systemTextBlocks) > 0 {
 		params.System = systemTextBlocks
