@@ -571,7 +571,9 @@ func (cm *ChatModel) getCallbackOutput(output *schema.Message) *model.CallbackOu
 		result.TokenUsage = &model.TokenUsage{
 			PromptTokens: output.ResponseMeta.Usage.PromptTokens,
 			PromptTokenDetails: model.PromptTokenDetails{
-				CachedTokens: output.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+				CachedTokens:             output.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+				CacheCreationInputTokens: output.ResponseMeta.Usage.PromptTokenDetails.CacheCreationInputTokens,
+				CacheReadInputTokens:     output.ResponseMeta.Usage.PromptTokenDetails.CacheReadInputTokens,
 			},
 			CompletionTokens: output.ResponseMeta.Usage.CompletionTokens,
 			TotalTokens:      output.ResponseMeta.Usage.TotalTokens,
@@ -658,9 +660,11 @@ func convOutputMessage(resp *anthropic.Message) (*schema.Message, error) {
 		ResponseMeta: &schema.ResponseMeta{
 			FinishReason: string(resp.StopReason),
 			Usage: &schema.TokenUsage{
-				PromptTokens: promptTokens,
+				PromptTokens: int(resp.Usage.InputTokens),
 				PromptTokenDetails: schema.PromptTokenDetails{
-					CachedTokens: int(resp.Usage.CacheReadInputTokens),
+					CachedTokens:             int(resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens),
+					CacheCreationInputTokens: int(resp.Usage.CacheCreationInputTokens),
+					CacheReadInputTokens:     int(resp.Usage.CacheReadInputTokens),
 				},
 				CompletionTokens: int(resp.Usage.OutputTokens),
 				TotalTokens:      promptTokens + int(resp.Usage.OutputTokens),
@@ -731,10 +735,12 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 		result.ResponseMeta = &schema.ResponseMeta{
 			FinishReason: string(e.Delta.StopReason),
 			Usage: &schema.TokenUsage{
-				PromptTokens:     int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens),
+				PromptTokens:     int(e.Usage.InputTokens),
 				CompletionTokens: int(e.Usage.OutputTokens),
 				PromptTokenDetails: schema.PromptTokenDetails{
-					CachedTokens: int(e.Usage.CacheReadInputTokens),
+					CachedTokens:             int(e.Usage.CacheReadInputTokens),
+					CacheCreationInputTokens: int(e.Usage.CacheCreationInputTokens),
+					CacheReadInputTokens:     int(e.Usage.CacheReadInputTokens),
 				},
 				TotalTokens: int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens + e.Usage.OutputTokens),
 			},
