@@ -738,7 +738,7 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 				PromptTokens:     int(e.Usage.InputTokens),
 				CompletionTokens: int(e.Usage.OutputTokens),
 				PromptTokenDetails: schema.PromptTokenDetails{
-					CachedTokens:             int(e.Usage.CacheReadInputTokens),
+					CachedTokens:             int(e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens),
 					CacheCreationInputTokens: int(e.Usage.CacheCreationInputTokens),
 					CacheReadInputTokens:     int(e.Usage.CacheReadInputTokens),
 				},
