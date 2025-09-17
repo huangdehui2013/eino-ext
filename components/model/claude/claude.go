@@ -269,7 +269,10 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 		var waitList []*schema.Message
 		streamCtx := &streamContext{}
 		for stream.Next() {
-			message, err_ := convStreamEvent(stream.Current(), streamCtx)
+			s := stream.Current()
+			idx := int(s.Index)
+			streamCtx.toolIndex = &idx
+			message, err_ := convStreamEvent(s, streamCtx)
 			if err_ != nil {
 				_ = sw.Send(nil, fmt.Errorf("convert response chunk to schema message fail: %w", err_))
 				return
@@ -673,7 +676,8 @@ func convOutputMessage(resp *anthropic.Message) (*schema.Message, error) {
 	}
 
 	streamCtx := &streamContext{}
-	for _, item := range resp.Content {
+	for index, item := range resp.Content {
+		streamCtx.toolIndex = &index
 		err := convContentBlockToEinoMsg(item.AsAny(), message, streamCtx)
 		if err != nil {
 			return nil, err
@@ -757,6 +761,7 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 		//	case anthropic.ThinkingBlock:
 		//	case anthropic.RedactedThinkingBlock:
 		err := convContentBlockToEinoMsg(e.ContentBlock.AsAny(), result, streamCtx)
+
 		if err != nil {
 			return nil, err
 		}
@@ -818,14 +823,14 @@ func isMessageEmpty(message *schema.Message) bool {
 
 func toolEvent(isStart bool, toolCallID, toolName string, input any, sc *streamContext) schema.ToolCall {
 	// count tool call index for stream
-	if isStart {
-		if sc.toolIndex == nil {
-			sc.toolIndex = of(-1)
-		}
-		*sc.toolIndex++
-	} else if sc.toolIndex == nil {
-		sc.toolIndex = of(0)
-	}
+	/*	if isStart {
+			if sc.toolIndex == nil {
+				sc.toolIndex = of(-1)
+			}
+			*sc.toolIndex++
+		} else if sc.toolIndex == nil {
+			sc.toolIndex = of(0)
+		}*/
 
 	toolIndex := sc.toolIndex
 
