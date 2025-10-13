@@ -490,14 +490,14 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		return anthropic.MessageNewParams{}, err
 	}
 
-	if err = cm.populateInput(&params, system, msgs, specOptions); err != nil {
+	if err = cm.populateInput(&params, cacheControl, system, msgs, specOptions); err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
 
 	return params, nil
 }
 
-func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, system []*schema.Message, msgs []*schema.Message, specOptions *options) error {
+func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, cacheControl bool, system []*schema.Message, msgs []*schema.Message, specOptions *options) error {
 	// populate system messages
 	hasSetSysBreakPoint := false
 	for _, m := range system {
@@ -505,6 +505,12 @@ func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, system []
 		if isBreakpointMessage(m) {
 			hasSetSysBreakPoint = true
 			block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
+
+		if cacheControl {
+			block.CacheControl = anthropic.CacheControlEphemeralParam{
+				Type: "ephemeral",
+			}
 		}
 		params.System = append(params.System, block)
 	}
