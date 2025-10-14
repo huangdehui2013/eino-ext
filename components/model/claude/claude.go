@@ -399,6 +399,10 @@ func toAnthropicToolParam(tools []*schema.ToolInfo) ([]anthropic.ToolUnionParam,
 			InputSchema: inputSchema,
 		}
 
+		if tool.Type != "" {
+			toolParam.Type = anthropic.ToolType(tool.Type)
+		}
+
 		if isBreakpointTool(tool) {
 			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
