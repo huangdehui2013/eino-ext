@@ -341,6 +341,23 @@ func (cm *ChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatM
 	return &ncm, nil
 }
 
+func (cm *ChatModel) WithForcedTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	if len(tools) == 0 {
+		return nil, errors.New("no tools to bind")
+	}
+	aTools, err := toAnthropicToolParam(tools)
+	if err != nil {
+		return nil, fmt.Errorf("to anthropic tool param fail: %w", err)
+	}
+
+	tc := schema.ToolChoiceForced
+	ncm := *cm
+	ncm.tools = aTools
+	ncm.toolChoice = &tc
+	ncm.origTools = tools
+	return &ncm, nil
+}
+
 func (cm *ChatModel) BindTools(tools []*schema.ToolInfo) error {
 	if len(tools) == 0 {
 		return errors.New("no tools to bind")
