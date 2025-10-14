@@ -460,7 +460,6 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		TopK:                   cm.topK,
 		Thinking:               cm.thinking,
 		DisableParallelToolUse: cm.disableParallelToolUse,
-		EnableAutoCache:        &cm.cacheControl,
 	}, opts...)
 
 	params := anthropic.MessageNewParams{}
