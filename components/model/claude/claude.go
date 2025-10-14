@@ -333,7 +333,7 @@ func (cm *ChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatM
 		return nil, fmt.Errorf("to anthropic tool param fail: %w", err)
 	}
 
-	tc := schema.ToolChoiceForced
+	tc := schema.ToolChoiceAllowed
 	ncm := *cm
 	ncm.tools = aTools
 	ncm.toolChoice = &tc
