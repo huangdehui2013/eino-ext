@@ -459,7 +459,9 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 	specOptions := model.GetImplSpecificOptions(&options{
 		TopK:                   cm.topK,
 		Thinking:               cm.thinking,
-		DisableParallelToolUse: cm.disableParallelToolUse}, opts...)
+		DisableParallelToolUse: cm.disableParallelToolUse,
+		EnableAutoCache:        &cm.cacheControl,
+	}, opts...)
 
 	params := anthropic.MessageNewParams{}
 	if commonOptions.Model != nil {
