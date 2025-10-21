@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 CloudWeGo Authors
+ * Copyright 2025 CloudWeGo Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,15 +19,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
 	"google.golang.org/genai"
 
 	"github.com/cloudwego/eino-ext/components/model/gemini"
+	"github.com/cloudwego/eino/schema"
 )
 
 func main() {
@@ -57,73 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("NewChatModel of gemini failed, err=%v", err)
 	}
-
-	fmt.Println("\n=== Basic Chat ===")
-	basicChat(ctx, cm)
-
-	fmt.Println("\n=== Streaming Chat ===")
-	streamingChat(ctx, cm)
-
-	fmt.Println("\n=== Function Calling ===")
-	functionCalling(ctx, cm)
-
-	fmt.Println("\n=== Image Processing ===")
-	imageProcessing(ctx, client)
-}
-
-func basicChat(ctx context.Context, cm model.ChatModel) {
-	resp, err := cm.Generate(ctx, []*schema.Message{
-		{
-			Role:    schema.User,
-			Content: "What is the capital of France?",
-		},
-	})
-	if err != nil {
-		log.Printf("Generate error: %v", err)
-		return
-	}
-	fmt.Printf("Assistant: %s\n", resp.Content)
-	if len(resp.ReasoningContent) > 0 {
-		fmt.Printf("ReasoningContent: %s\n", resp.ReasoningContent)
-	}
-}
-
-func streamingChat(ctx context.Context, cm model.ChatModel) {
-	stream, err := cm.Stream(ctx, []*schema.Message{
-		{
-			Role:    schema.User,
-			Content: "Write a short poem about spring.",
-		},
-	})
-	if err != nil {
-		log.Printf("Stream error: %v", err)
-		return
-	}
-
-	fmt.Println("Assistant: ")
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("Stream receive error: %v", err)
-			return
-		}
-
-		fmt.Println("frame: ")
-		if len(resp.Content) > 0 {
-			fmt.Println("content: ", resp.Content)
-		}
-		if len(resp.ReasoningContent) > 0 {
-			fmt.Printf("ReasoningContent: %s\n", resp.ReasoningContent)
-		}
-	}
-	fmt.Println()
-}
-
-func functionCalling(ctx context.Context, cm model.ChatModel) {
-	err := cm.BindTools([]*schema.ToolInfo{
+	err = cm.BindTools([]*schema.ToolInfo{
 		{
 			Name: "book_recommender",
 			Desc: "Recommends books based on user preferences and provides purchase links",
@@ -188,54 +120,4 @@ func functionCalling(ctx context.Context, cm model.ChatModel) {
 		return
 	}
 	fmt.Printf("Function call final result: %s\n", resp.Content)
-}
-
-func imageProcessing(ctx context.Context, client *genai.Client) {
-	file, err := client.Files.UploadFromPath(ctx, "examples/test.jpg", &genai.UploadFileConfig{
-		DisplayName: "test",
-		MIMEType:    "image/jpeg",
-	})
-	if err != nil {
-		log.Printf("Upload file error: %v", err)
-		return
-	}
-	defer func() {
-		_, err = client.Files.Delete(ctx, file.Name, &genai.DeleteFileConfig{})
-		if err != nil {
-			log.Printf("Delete file error: %v", err)
-		}
-	}()
-
-	cm, err := gemini.NewChatModel(ctx, &gemini.Config{
-		Client: client,
-		Model:  "gemini-1.5-flash",
-	})
-	if err != nil {
-		log.Printf("NewChatModel error: %v", err)
-		return
-	}
-
-	resp, err := cm.Generate(ctx, []*schema.Message{
-		{
-			Role: schema.User,
-			MultiContent: []schema.ChatMessagePart{
-				{
-					Type: schema.ChatMessagePartTypeText,
-					Text: "What do you see in this image?",
-				},
-				{
-					Type: schema.ChatMessagePartTypeImageURL,
-					ImageURL: &schema.ChatMessageImageURL{
-						URI:      file.URI,
-						MIMEType: "image/jpeg",
-					},
-				},
-			},
-		},
-	})
-	if err != nil {
-		log.Printf("Generate error: %v", err)
-		return
-	}
-	fmt.Printf("Assistant: %s\n", resp.Content)
 }

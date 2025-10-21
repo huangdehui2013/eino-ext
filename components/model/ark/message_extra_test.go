@@ -40,6 +40,10 @@ func TestConcatMessages(t *testing.T) {
 	setServiceTier(msgs[1], "service tier")
 	setResponseID(msgs[0], "resp id")
 	setResponseCaching(msgs[0], cachingEnabled)
+	setResponseID(msgs[0], "resp id")
+	setResponseID(msgs[1], "resp id")
+	setContextID(msgs[0], "context id")
+	setContextID(msgs[1], "context id")
 
 	msg, err := schema.ConcatMessages(msgs)
 	assert.NoError(t, err)
@@ -64,4 +68,74 @@ func TestConcatMessages(t *testing.T) {
 	caching_, ok := getResponseCaching(msg)
 	assert.Equal(t, true, ok)
 	assert.Equal(t, string(cachingEnabled), caching_)
+
+	respID, ok := GetResponseID(msg)
+	assert.Equal(t, true, ok)
+	assert.Equal(t, "resp id", respID)
+
+	respID, ok = GetResponseID(&schema.Message{
+		Extra: map[string]any{
+			keyOfResponseID: "resp id",
+		},
+	})
+	assert.Equal(t, true, ok)
+	assert.Equal(t, "resp id", respID)
+
+	contextID, ok := GetContextID(msg)
+	assert.Equal(t, true, ok)
+	assert.Equal(t, "context id", contextID)
+
+	contextID, ok = GetContextID(&schema.Message{
+		Extra: map[string]any{
+			keyOfContextID: "context id",
+		},
+	})
+	assert.Equal(t, true, ok)
+	assert.Equal(t, "context id", contextID)
+
+	caching_, ok = getResponseCaching(&schema.Message{
+		Extra: map[string]any{
+			keyOfResponseCaching: string(cachingEnabled),
+		},
+	})
+	assert.Equal(t, true, ok)
+	assert.Equal(t, string(cachingEnabled), caching_)
+}
+
+func TestFPSFunctions(t *testing.T) {
+	t.Run("TestSetFPS", func(t *testing.T) {
+		videoURL := &schema.ChatMessageVideoURL{}
+
+		// Success case
+		SetFPS(videoURL, 2.5)
+		assert.Equal(t, ptrOf(2.5), GetFPS(videoURL))
+
+		// Boundary case: nil input
+		SetFPS(nil, 2.5)
+		assert.Nil(t, GetFPS(nil))
+	})
+
+	t.Run("TestSetInputVideoFPS", func(t *testing.T) {
+		inputVideo := &schema.MessageInputVideo{}
+
+		// Success case
+		setInputVideoFPS(inputVideo, 3.0)
+		assert.Equal(t, ptrOf(3.0), GetInputVideoFPS(inputVideo))
+
+		// Boundary case: nil input
+		setInputVideoFPS(nil, 3.0)
+		assert.Nil(t, GetInputVideoFPS(nil))
+	})
+
+	t.Run("TestSetOutputVideoFPS", func(t *testing.T) {
+		outputVideo := &schema.MessageOutputVideo{}
+
+		// Success case
+		setOutputVideoFPS(outputVideo, 4.0)
+		assert.Equal(t, ptrOf(4.0), GetOutputVideoFPS(outputVideo))
+
+		// Boundary case: nil input
+		setOutputVideoFPS(nil, 4.0)
+		assert.Nil(t, GetOutputVideoFPS(nil))
+	})
 }

@@ -36,6 +36,8 @@ const (
 type arkRequestID string
 type arkModelName string
 type arkServiceTier string
+type arkResponseID string
+type arkContextID string
 
 func init() {
 	compose.RegisterStreamChunkConcatFunc(func(chunks []arkRequestID) (final arkRequestID, err error) {
@@ -69,6 +71,34 @@ func init() {
 		return chunks[len(chunks)-1], nil
 	})
 	schema.RegisterName[caching]("_eino_ext_ark_response_caching")
+
+	compose.RegisterStreamChunkConcatFunc(func(chunks []arkContextID) (final arkContextID, err error) {
+		if len(chunks) == 0 {
+			return "", nil
+		}
+		// Some chunks may not contain a contextID, so it is more reliable to take the first non-empty contextID.
+		for _, chunk := range chunks {
+			if chunk != "" {
+				return chunk, nil
+			}
+		}
+		return "", nil
+	})
+	schema.RegisterName[arkContextID]("_eino_ext_ark_context_id")
+
+	compose.RegisterStreamChunkConcatFunc(func(chunks []arkResponseID) (final arkResponseID, err error) {
+		if len(chunks) == 0 {
+			return "", nil
+		}
+		// Some chunks may not contain a responseID, so it is more reliable to take the first non-empty responseID.
+		for _, chunk := range chunks {
+			if chunk != "" {
+				return chunk, nil
+			}
+		}
+		return "", nil
+	})
+	schema.RegisterName[arkResponseID]("_eino_ext_ark_response_id")
 }
 
 func GetArkRequestID(msg *schema.Message) string {
@@ -104,29 +134,55 @@ func setModelName(msg *schema.Message, name string) {
 // GetContextID returns the conversation context ID from the message.
 // Available only for ResponsesAPI responses.
 func GetContextID(msg *schema.Message) (string, bool) {
-	return getMsgExtraValue[string](msg, keyOfContextID)
+	contextID_, ok := getMsgExtraValue[arkContextID](msg, keyOfContextID)
+	if ok {
+		return string(contextID_), true
+	}
+	// Since registering the concat logic requires defining `arkContextID` type,
+	// this fallback logic needs to be retained to be compatible with `string` type.
+	contextIDStr, ok := getMsgExtraValue[string](msg, keyOfContextID)
+	if !ok {
+		return "", false
+	}
+	return contextIDStr, true
 }
 
 func setContextID(msg *schema.Message, contextID string) {
-	setMsgExtra(msg, keyOfContextID, contextID)
+	setMsgExtra(msg, keyOfContextID, arkContextID(contextID))
 }
 
 // GetResponseID returns the response ID from the message.
 // Available only for ResponsesAPI responses.
 func GetResponseID(msg *schema.Message) (string, bool) {
-	return getMsgExtraValue[string](msg, keyOfResponseID)
+	responseID_, ok := getMsgExtraValue[arkResponseID](msg, keyOfResponseID)
+	if ok {
+		return string(responseID_), true
+	}
+	// Since registering the concat logic requires defining `arkResponseID` type,
+	// this fallback logic needs to be retained to be compatible with `string` type.
+	responseIDStr, ok := getMsgExtraValue[string](msg, keyOfResponseID)
+	if !ok {
+		return "", false
+	}
+	return responseIDStr, true
 }
 
 func setResponseID(msg *schema.Message, responseID string) {
-	setMsgExtra(msg, keyOfResponseID, responseID)
+	setMsgExtra(msg, keyOfResponseID, arkResponseID(responseID))
 }
 
 func getResponseCaching(msg *schema.Message) (string, bool) {
 	caching_, ok := getMsgExtraValue[caching](msg, keyOfResponseCaching)
-	if !ok {
-		return "", false
+	if ok {
+		return string(caching_), true
 	}
-	return string(caching_), true
+	// When the user serializes and deserializes the message,
+	// the type will be lost and compatibility with the string type is required.
+	cachingStr, ok := getMsgExtraValue[string](msg, keyOfResponseCaching)
+	if ok {
+		return cachingStr, true
+	}
+	return "", false
 }
 
 // setResponseCaching sets the cached status of the response.
@@ -157,14 +213,62 @@ func SetFPS(part *schema.ChatMessageVideoURL, fps float64) {
 	if part == nil {
 		return
 	}
-	part.Extra[videoURLFPS] = fps
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	setFPS(part.Extra, fps)
 }
 
 func GetFPS(part *schema.ChatMessageVideoURL) *float64 {
 	if part == nil {
 		return nil
 	}
-	fps, ok := part.Extra[videoURLFPS].(float64)
+	return getFPS(part.Extra)
+}
+
+func setInputVideoFPS(part *schema.MessageInputVideo, fps float64) {
+	if part == nil {
+		return
+	}
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	setFPS(part.Extra, fps)
+}
+
+func GetInputVideoFPS(part *schema.MessageInputVideo) *float64 {
+	if part == nil {
+		return nil
+	}
+	return getFPS(part.Extra)
+}
+
+func setOutputVideoFPS(part *schema.MessageOutputVideo, fps float64) {
+	if part == nil {
+		return
+	}
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	setFPS(part.Extra, fps)
+}
+
+func GetOutputVideoFPS(part *schema.MessageOutputVideo) *float64 {
+	if part == nil {
+		return nil
+	}
+	return getFPS(part.Extra)
+}
+
+func setFPS(extra map[string]any, fps float64) {
+	extra[videoURLFPS] = fps
+}
+
+func getFPS(extra map[string]any) *float64 {
+	if extra == nil {
+		return nil
+	}
+	fps, ok := extra[videoURLFPS].(float64)
 	if !ok {
 		return nil
 	}
