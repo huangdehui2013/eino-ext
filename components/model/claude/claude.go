@@ -106,6 +106,8 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		topP:                   config.TopP,
 		disableParallelToolUse: config.DisableParallelToolUse,
 		cacheControl:           config.CacheControl,
+		betas:                  config.Betas,
+		contextManagement:      config.ContextManagement,
 	}, nil
 }
 
@@ -187,6 +189,12 @@ type Config struct {
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use"`
 
 	CacheControl bool `json:"cache_control"`
+
+	// Betas specifies Anthropic beta feature flags to enable via header.
+	Betas []anthropic.AnthropicBeta `json:"betas"`
+
+	// ContextManagement configures Anthropic context management edits.
+	ContextManagement *anthropic.BetaContextManagementConfigParam `json:"context_management"`
 }
 
 type Thinking struct {
@@ -210,6 +218,9 @@ type ChatModel struct {
 	disableParallelToolUse *bool
 
 	cacheControl bool
+
+	betas             []anthropic.AnthropicBeta
+	contextManagement *anthropic.BetaContextManagementConfigParam
 }
 
 func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (message *schema.Message, err error) {
@@ -505,6 +516,14 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 
 	if err = cm.populateInput(&params, cacheControl, system, msgs, specOptions); err != nil {
 		return anthropic.MessageNewParams{}, err
+	}
+
+	// apply betas header and context management config
+	if len(cm.betas) > 0 {
+		params.Betas = cm.betas
+	}
+	if cm.contextManagement != nil {
+		params.ContextManagement = *cm.contextManagement
 	}
 
 	return params, nil
