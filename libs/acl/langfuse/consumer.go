@@ -19,6 +19,7 @@ package langfuse
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -125,7 +126,8 @@ func (i *ingestionConsumer) run() {
 			if len(batch) == 0 {
 				continue
 			}
-			log.Printf("ingest consumer upload %d events : %+v", len(batch), batch)
+			data, _ := json.MarshalIndent(batch, "", "  ")
+			log.Printf("ingest consumer upload %d events : %s", len(batch), string(data))
 			err := i.upload(batch)
 			if err != nil {
 				log.Printf("ingest consumer upload error: %v", err)
