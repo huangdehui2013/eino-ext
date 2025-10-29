@@ -125,7 +125,7 @@ func (i *ingestionConsumer) run() {
 			if len(batch) == 0 {
 				continue
 			}
-
+			log.Printf("ingest consumer upload %d events : %+v", len(batch), batch)
 			err := i.upload(batch)
 			if err != nil {
 				log.Printf("ingest consumer upload error: %v", err)
@@ -153,10 +153,10 @@ func (i *ingestionConsumer) next() []*event {
 		}
 
 		// sample
-		if !i.deterministicSample(ev.Body.getTraceID()) {
-			i.eventQueue.done()
-			continue
-		}
+		//if !i.deterministicSample(ev.Body.getTraceID()) {
+		//	i.eventQueue.done()
+		//	continue
+		//}
 
 		// handle multi-modal data
 		if ev.Body.Generation != nil {
@@ -225,7 +225,6 @@ func (i *ingestionConsumer) deterministicSample(traceID string) bool {
 	normalized := float64(hashInt) / float64(0xFFFFFFFF)
 	return normalized < i.sampleRate
 }
-
 func (i *ingestionConsumer) truncate(ev *event) int {
 	type lenAndClear struct {
 		len   int
