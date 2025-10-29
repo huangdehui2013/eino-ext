@@ -126,7 +126,7 @@ func (i *ingestionConsumer) run() {
 			if len(batch) == 0 {
 				continue
 			}
-			data, _ := json.MarshalIndent(batch, "", "  ")
+			data, _ := json.Marshal(batch)
 			log.Printf("ingest consumer upload %d events : %s", len(batch), string(data))
 			err := i.upload(batch)
 			if err != nil {
