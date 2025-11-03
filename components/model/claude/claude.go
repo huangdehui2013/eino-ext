@@ -460,7 +460,6 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		TopK:                   cm.topK,
 		Thinking:               cm.thinking,
 		DisableParallelToolUse: cm.disableParallelToolUse,
-		ToolEnableAutoCache:    &cm.cacheControl,
 	}, opts...)
 
 	params := anthropic.MessageNewParams{}
@@ -563,7 +562,7 @@ func (cm *ChatModel) populateTools(params *anthropic.MessageNewParams, commonOpt
 		}
 	}
 
-	if len(tools) > 0 && fromOrDefault(specOptions.ToolEnableAutoCache, false) {
+	if len(tools) > 0 && fromOrDefault(specOptions.EnableAutoCache, false) {
 		hasBreakpoint := false
 		for _, tool := range tools {
 			if ctrl := tool.GetCacheControl(); ctrl != nil && ctrl.Type != "" {
