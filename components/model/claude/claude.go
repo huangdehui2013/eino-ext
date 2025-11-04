@@ -84,10 +84,18 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 
 		creds, err := google.CredentialsFromJSON(ctx, config.JsonKey, "https://www.googleapis.com/auth/cloud-platform")
 		if err != nil {
-			return nil, fmt.Errorf("Failed to create credentials: %v", err)
+			return nil, fmt.Errorf("failed to create credentials: %v", err)
 		}
 
-		cli = anthropic.NewClient(vertex.WithCredentials(ctx, config.Region, config.ProjectID, creds))
+		var vopts []option.RequestOption
+		vopts = append(vopts, vertex.WithCredentials(ctx, config.Region, config.ProjectID, creds))
+		// Add Anthropic beta header if provided
+		if config.AnthropicBeta != "" {
+			vopts = append(vopts, option.WithHeaderAdd("anthropic-beta", config.AnthropicBeta))
+		}
+
+		cli = anthropic.NewClient(vopts...)
+
 	} else {
 		var opts []func(*awsConfig.LoadOptions) error
 		if config.Region != "" {
@@ -205,6 +213,10 @@ type Config struct {
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use"`
 
 	CacheControl bool `json:"cache_control"`
+
+	// AnthropicBeta sets the "anthropic-beta" header to enable beta features
+	// Example: "tools-2024-10-22, prompt-caching-2024-07-31"
+	AnthropicBeta string `json:"anthropic_beta"`
 }
 
 type Thinking struct {
