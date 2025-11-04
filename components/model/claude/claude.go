@@ -25,8 +25,6 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"cloud.google.com/go/compute/metadata"
-
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -64,7 +62,7 @@ var _ model.ToolCallingChatModel = (*ChatModel)(nil)
 //	})
 func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 	var cli anthropic.Client
-	if !config.ByBedrock {
+	if !config.ByBedrock && !config.Vertex {
 		var opts []option.RequestOption
 
 		opts = append(opts, option.WithAPIKey(config.APIKey))
@@ -84,24 +82,12 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 			return nil, fmt.Errorf("vertex requires Region to be set")
 		}
 
-		creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+		creds, err := google.CredentialsFromJSON(ctx, config.JsonKey, "https://www.googleapis.com/auth/cloud-platform")
 		if err != nil {
-			return nil, fmt.Errorf("vertex: failed to find default Google credentials: %w", err)
+			return nil, fmt.Errorf("Failed to create credentials: %v", err)
 		}
 
-		projectID := creds.ProjectID
-		if projectID == "" {
-			if metadata.OnGCE() {
-				if pid, err := metadata.ProjectIDWithContext(ctx); err == nil {
-					projectID = pid
-				}
-			}
-		}
-		if projectID == "" {
-			return nil, fmt.Errorf("vertex: missing project ID; set credentials with project or configure environment")
-		}
-
-		cli = anthropic.NewClient(vertex.WithCredentials(ctx, config.Region, projectID, creds))
+		cli = anthropic.NewClient(vertex.WithCredentials(ctx, config.Region, config.ProjectID, creds))
 	} else {
 		var opts []func(*awsConfig.LoadOptions) error
 		if config.Region != "" {
@@ -143,6 +129,8 @@ type Config struct {
 	ByBedrock bool
 
 	Vertex bool
+
+	JsonKey []byte
 	// AccessKey is your Bedrock API Access key
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
@@ -168,6 +156,8 @@ type Config struct {
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
 	Region string
+
+	ProjectID string
 
 	// BaseURL is the custom API endpoint URL
 	// Use this to specify a different API endpoint, e.g., for proxies or enterprise setups
