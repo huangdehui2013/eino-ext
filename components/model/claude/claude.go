@@ -25,12 +25,16 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"cloud.google.com/go/compute/metadata"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"golang.org/x/oauth2/google"
 
 	"github.com/cloudwego/eino/components"
 
@@ -74,6 +78,30 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		}
 
 		cli = anthropic.NewClient(opts...)
+	} else if config.Vertex {
+		// Initialize client for Anthropic on Vertex AI using Google ADC
+		if config.Region == "" {
+			return nil, fmt.Errorf("vertex requires Region to be set")
+		}
+
+		creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return nil, fmt.Errorf("vertex: failed to find default Google credentials: %w", err)
+		}
+
+		projectID := creds.ProjectID
+		if projectID == "" {
+			if metadata.OnGCE() {
+				if pid, err := metadata.ProjectIDWithContext(ctx); err == nil {
+					projectID = pid
+				}
+			}
+		}
+		if projectID == "" {
+			return nil, fmt.Errorf("vertex: missing project ID; set credentials with project or configure environment")
+		}
+
+		cli = anthropic.NewClient(vertex.WithCredentials(ctx, config.Region, projectID, creds))
 	} else {
 		var opts []func(*awsConfig.LoadOptions) error
 		if config.Region != "" {
@@ -114,6 +142,7 @@ type Config struct {
 	// Required for Bedrock
 	ByBedrock bool
 
+	Vertex bool
 	// AccessKey is your Bedrock API Access key
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
