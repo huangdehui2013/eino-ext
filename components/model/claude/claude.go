@@ -1048,14 +1048,14 @@ func isMessageEmpty(message *schema.Message) bool {
 
 func toolEvent(isStart bool, toolCallID, toolName string, input any, sc *streamContext) schema.ToolCall {
 	// count tool call index for stream
-	if isStart {
+	/*if isStart {
 		if sc.toolIndex == nil {
 			sc.toolIndex = of(-1)
 		}
 		sc.toolIndex = of(*sc.toolIndex + 1)
 	} else if sc.toolIndex == nil {
 		sc.toolIndex = of(0)
-	}
+	}*/
 
 	toolIndex := sc.toolIndex
 
