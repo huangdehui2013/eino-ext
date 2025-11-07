@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.54
 	github.com/bytedance/mockey v1.2.13
-	github.com/cloudwego/eino v0.5.10
+	github.com/cloudwego/eino v0.5.12
 	github.com/eino-contrib/jsonschema v1.0.2
 	github.com/stretchr/testify v1.10.0
 	github.com/wk8/go-ordered-map/v2 v2.1.8
@@ -96,6 +96,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.0
+replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.3
 
 //replace github.com/cloudwego/eino => /Users/chenkang/GolandProjects/eino

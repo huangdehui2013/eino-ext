@@ -808,12 +808,17 @@ func convSchemaMessage(message *schema.Message) (mp anthropic.MessageParam, err 
 				if message.MultiContent[i].ImageURL == nil {
 					continue
 				}
+				if message.MultiContent[i].ImageURL.Base64Data != "" {
+					messageParams = append(messageParams, anthropic.NewImageBlockBase64(message.MultiContent[i].ImageURL.MIMEType, message.MultiContent[i].ImageURL.Base64Data))
+					continue
+				}
 				if strings.HasPrefix(message.MultiContent[i].ImageURL.URL, "http") {
 					messageParams = append(messageParams, anthropic.NewImageBlock(anthropic.URLImageSourceParam{
 						URL: message.MultiContent[i].ImageURL.URL,
 					}))
 					continue
 				}
+
 				mediaType, data, err_ := convImageBase64(message.MultiContent[i].ImageURL.URL)
 				if err_ != nil {
 					return mp, fmt.Errorf("extract base64 image fail: %w", err_)
@@ -969,6 +974,7 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 				TotalTokens: int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens + e.Usage.OutputTokens),
 			},
 		}
+
 		return result, nil
 
 	case anthropic.MessageStopEvent, anthropic.ContentBlockStopEvent:
