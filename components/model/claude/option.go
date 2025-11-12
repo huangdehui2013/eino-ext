@@ -28,8 +28,6 @@ type options struct {
 	DisableParallelToolUse *bool
 
 	EnableAutoCache *bool
-
-	ToolEnableAutoCache *bool
 }
 
 func WithTopK(k int32) model.Option {

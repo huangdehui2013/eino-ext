@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -29,8 +30,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"golang.org/x/oauth2/google"
 
 	"github.com/cloudwego/eino/components"
 
@@ -60,7 +63,7 @@ var _ model.ToolCallingChatModel = (*ChatModel)(nil)
 //	})
 func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 	var cli anthropic.Client
-	if !config.ByBedrock {
+	if !config.ByBedrock && !config.Vertex {
 		var opts []option.RequestOption
 
 		opts = append(opts, option.WithAPIKey(config.APIKey))
@@ -74,6 +77,26 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		}
 
 		cli = anthropic.NewClient(opts...)
+	} else if config.Vertex {
+		// Initialize client for Anthropic on Vertex AI using Google ADC
+		if config.Region == "" {
+			return nil, fmt.Errorf("vertex requires Region to be set")
+		}
+
+		creds, err := google.CredentialsFromJSON(ctx, config.JsonKey, "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create credentials: %v", err)
+		}
+
+		var vopts []option.RequestOption
+		vopts = append(vopts, vertex.WithCredentials(ctx, config.Region, config.ProjectID, creds))
+		// Add Anthropic beta header if provided
+		if config.AnthropicBeta != "" {
+			vopts = append(vopts, option.WithHeaderAdd("anthropic-beta", config.AnthropicBeta))
+		}
+
+		cli = anthropic.NewClient(vopts...)
+
 	} else {
 		var opts []func(*awsConfig.LoadOptions) error
 		if config.Region != "" {
@@ -114,6 +137,9 @@ type Config struct {
 	// Required for Bedrock
 	ByBedrock bool
 
+	Vertex bool
+
+	JsonKey []byte
 	// AccessKey is your Bedrock API Access key
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
@@ -139,6 +165,8 @@ type Config struct {
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
 	Region string
+
+	ProjectID string
 
 	// BaseURL is the custom API endpoint URL
 	// Use this to specify a different API endpoint, e.g., for proxies or enterprise setups
@@ -186,6 +214,10 @@ type Config struct {
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use"`
 
 	CacheControl bool `json:"cache_control"`
+
+	// AnthropicBeta sets the "anthropic-beta" header to enable beta features
+	// Example: "tools-2024-10-22, prompt-caching-2024-07-31"
+	AnthropicBeta string `json:"anthropic_beta"`
 }
 
 type Thinking struct {
@@ -224,15 +256,19 @@ func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := cm.cli.Messages.New(ctx, msgParam)
 	if err != nil {
 		return nil, fmt.Errorf("create new message fail: %w", err)
 	}
+
 	message, err = convOutputMessage(resp)
 	if err != nil {
 		return nil, fmt.Errorf("convert response to schema message fail: %w", err)
 	}
+
 	callbacks.OnEnd(ctx, cm.getCallbackOutput(message))
+
 	return message, nil
 }
 
@@ -284,6 +320,7 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 				waitList = append(waitList, message)
 				continue
 			}
+
 			if len(waitList) != 0 {
 				message, err = schema.ConcatMessages(append(waitList, message))
 				if err != nil {
@@ -292,6 +329,7 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 				}
 				waitList = []*schema.Message{}
 			}
+
 			closed := sw.Send(cm.getCallbackOutput(message), nil)
 			if closed {
 				return
@@ -460,7 +498,6 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		TopK:                   cm.topK,
 		Thinking:               cm.thinking,
 		DisableParallelToolUse: cm.disableParallelToolUse,
-		ToolEnableAutoCache:    &cm.cacheControl,
 	}, opts...)
 
 	params := anthropic.MessageNewParams{}
@@ -563,7 +600,7 @@ func (cm *ChatModel) populateTools(params *anthropic.MessageNewParams, commonOpt
 		}
 	}
 
-	if len(tools) > 0 && fromOrDefault(specOptions.ToolEnableAutoCache, false) {
+	if len(tools) > 0 && fromOrDefault(specOptions.EnableAutoCache, false) {
 		hasBreakpoint := false
 		for _, tool := range tools {
 			if ctrl := tool.GetCacheControl(); ctrl != nil && ctrl.Type != "" {
@@ -614,12 +651,16 @@ func (cm *ChatModel) populateTools(params *anthropic.MessageNewParams, commonOpt
 }
 
 func (cm *ChatModel) getCallbackInput(input []*schema.Message, opts ...model.Option) *model.CallbackInput {
+	co := model.GetCommonOptions(&model.Options{
+		Tools:      cm.origTools,
+		ToolChoice: cm.toolChoice,
+	}, opts...)
+
 	result := &model.CallbackInput{
-		Messages: input,
-		Tools: model.GetCommonOptions(&model.Options{
-			Tools: cm.origTools,
-		}, opts...).Tools,
-		Config: cm.getConfig(),
+		Messages:   input,
+		Tools:      co.Tools,
+		ToolChoice: co.ToolChoice,
+		Config:     cm.getConfig(),
 	}
 	return result
 }
@@ -680,13 +721,85 @@ func convSchemaMessage(message *schema.Message) (mp anthropic.MessageParam, err 
 		}
 	}
 
+	if len(message.UserInputMultiContent) > 0 && len(message.AssistantGenMultiContent) > 0 {
+		return mp, fmt.Errorf("a message cannot contain both UserInputMultiContent and AssistantGenMultiContent")
+	}
+
 	if len(message.Content) > 0 {
 		if len(message.ToolCallID) > 0 {
 			messageParams = append(messageParams, anthropic.NewToolResultBlock(message.ToolCallID, message.Content, false))
 		} else {
 			messageParams = append(messageParams, anthropic.NewTextBlock(message.Content))
 		}
+	} else if len(message.UserInputMultiContent) > 0 {
+		if message.Role != schema.User {
+			return mp, fmt.Errorf("user input multi content only support user role, got %s", message.Role)
+		}
+		for i := range message.UserInputMultiContent {
+			switch message.UserInputMultiContent[i].Type {
+			case schema.ChatMessagePartTypeText:
+				messageParams = append(messageParams, anthropic.NewTextBlock(message.UserInputMultiContent[i].Text))
+			case schema.ChatMessagePartTypeImageURL:
+				if message.UserInputMultiContent[i].Image == nil {
+					return mp, fmt.Errorf("image field must not be nil when Type is ChatMessagePartTypeImageURL in user message")
+				}
+				image := message.UserInputMultiContent[i].Image
+				if image.URL != nil && *image.URL != "" {
+					messageParams = append(messageParams, anthropic.NewImageBlock(anthropic.URLImageSourceParam{
+						URL: *image.URL,
+					}))
+				} else if image.Base64Data != nil && *image.Base64Data != "" {
+					if image.MIMEType == "" {
+						return mp, fmt.Errorf("image part must have MIMEType when use Base64Data")
+					}
+					if strings.HasPrefix(*image.Base64Data, "data:") {
+						return mp, fmt.Errorf("Base64Data should be a raw base64 string, but it has a 'data:' prefix")
+					}
+					messageParams = append(messageParams, anthropic.NewImageBlockBase64(image.MIMEType, *image.Base64Data))
+				} else {
+					return mp, fmt.Errorf("image part must have either a URL or Base64Data")
+				}
+			default:
+				return mp, fmt.Errorf("anthropic message type not supported: %s", message.UserInputMultiContent[i].Type)
+			}
+		}
+	} else if len(message.AssistantGenMultiContent) > 0 {
+		if message.Role != schema.Assistant {
+			return mp, fmt.Errorf("assistant gen multi content only support assistant role, got %s", message.Role)
+		}
+		for i := range message.AssistantGenMultiContent {
+			switch message.AssistantGenMultiContent[i].Type {
+			case schema.ChatMessagePartTypeText:
+				messageParams = append(messageParams, anthropic.NewTextBlock(message.AssistantGenMultiContent[i].Text))
+			case schema.ChatMessagePartTypeImageURL:
+				if message.AssistantGenMultiContent[i].Image == nil {
+					return mp, fmt.Errorf("image field must not be nil when Type is ChatMessagePartTypeImageURL in assistant message")
+				}
+				image := message.AssistantGenMultiContent[i].Image
+				if image.URL != nil && *image.URL != "" {
+					messageParams = append(messageParams, anthropic.NewImageBlock(anthropic.URLImageSourceParam{
+						URL: *image.URL,
+					}))
+				} else if image.Base64Data != nil && *image.Base64Data != "" {
+					if image.MIMEType == "" {
+						return mp, fmt.Errorf("image part must have MIMEType when use Base64Data")
+					}
+					if strings.HasPrefix(*image.Base64Data, "data:") {
+						return mp, fmt.Errorf("Base64Data should be a raw base64 string, but it has a 'data:' prefix")
+					}
+					messageParams = append(messageParams, anthropic.NewImageBlockBase64(image.MIMEType, *image.Base64Data))
+				} else {
+					return mp, fmt.Errorf("image part must have either a URL or Base64Data")
+				}
+			default:
+				return mp, fmt.Errorf("anthropic message type not supported: %s", message.AssistantGenMultiContent[i].Type)
+			}
+		}
 	} else {
+		// The `MultiContent` field is deprecated. In its design, the `URL` field of `ImageURL`
+		// could contain either an HTTP URL or a Base64-encoded DATA URL. This is different from the new
+		// `UserInputMultiContent` and `AssistantGenMultiContent` fields, where `URL` and `Base64Data` are separate.
+		log.Printf("MultiContent is deprecated, please use UserInputMultiContent or AssistantGenMultiContent instead")
 		for i := range message.MultiContent {
 			switch message.MultiContent[i].Type {
 			case schema.ChatMessagePartTypeText:
@@ -695,6 +808,13 @@ func convSchemaMessage(message *schema.Message) (mp anthropic.MessageParam, err 
 				if message.MultiContent[i].ImageURL == nil {
 					continue
 				}
+				if strings.HasPrefix(message.MultiContent[i].ImageURL.URL, "http") {
+					messageParams = append(messageParams, anthropic.NewImageBlock(anthropic.URLImageSourceParam{
+						URL: message.MultiContent[i].ImageURL.URL,
+					}))
+					continue
+				}
+
 				mediaType, data, err_ := convImageBase64(message.MultiContent[i].ImageURL.URL)
 				if err_ != nil {
 					return mp, fmt.Errorf("extract base64 image fail: %w", err_)
@@ -707,9 +827,17 @@ func convSchemaMessage(message *schema.Message) (mp anthropic.MessageParam, err 
 	}
 
 	for i := range message.ToolCalls {
-		messageParams = append(messageParams, anthropic.NewToolUseBlock(message.ToolCalls[i].ID,
-			json.RawMessage(message.ToolCalls[i].Function.Arguments),
-			message.ToolCalls[i].Function.Name))
+		tc := message.ToolCalls[i]
+
+		args := tc.Function.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		// Arguments are limited to object type.
+		// Since json marshaling will be performed before the request,
+		// and arguments are already a json string, marshaling should not be performed,
+		// so it needs to be forcibly converted to json.RawMessage.
+		messageParams = append(messageParams, anthropic.NewToolUseBlock(tc.ID, json.RawMessage(args), tc.Function.Name))
 	}
 
 	if len(messageParams) > 0 && isBreakpointMessage(message) {
@@ -842,6 +970,7 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 				TotalTokens: int(e.Usage.InputTokens + e.Usage.CacheReadInputTokens + e.Usage.CacheCreationInputTokens + e.Usage.OutputTokens),
 			},
 		}
+
 		return result, nil
 
 	case anthropic.MessageStopEvent, anthropic.ContentBlockStopEvent:
@@ -921,14 +1050,14 @@ func isMessageEmpty(message *schema.Message) bool {
 
 func toolEvent(isStart bool, toolCallID, toolName string, input any, sc *streamContext) schema.ToolCall {
 	// count tool call index for stream
-	/*	if isStart {
-			if sc.toolIndex == nil {
-				sc.toolIndex = of(-1)
-			}
-			*sc.toolIndex++
-		} else if sc.toolIndex == nil {
-			sc.toolIndex = of(0)
-		}*/
+	/*if isStart {
+		if sc.toolIndex == nil {
+			sc.toolIndex = of(-1)
+		}
+		sc.toolIndex = of(*sc.toolIndex + 1)
+	} else if sc.toolIndex == nil {
+		sc.toolIndex = of(0)
+	}*/
 
 	toolIndex := sc.toolIndex
 
@@ -938,6 +1067,10 @@ func toolEvent(isStart bool, toolCallID, toolName string, input any, sc *streamC
 	} else if arg, ok_ := input.(string); ok_ {
 		arguments = arg
 	}
+
+	// If the arguments of the tool call are empty,
+	// Claude will repeatedly output multiple identical streaming chunks, and the arguments are all "{}"
+	// There will be problems when concat streaming chunks.
 	if arguments == "{}" {
 		arguments = ""
 	}
