@@ -100,6 +100,8 @@ func (l *langfuseIns) UpdateTrace(body *TraceEventBody) (string, error) {
 	if len(body.ID) == 0 {
 		return "", fmt.Errorf("trace ID cannot be empty")
 	}
+	body.TimeStamp = time.Now().UTC()
+
 	return body.ID, l.tm.push(&event{
 		ID:   uuid.NewString(),
 		Type: EventTypeTraceCreate,
@@ -124,9 +126,8 @@ func (l *langfuseIns) CreateTrace(body *TraceEventBody) (string, error) {
 	if len(body.ID) == 0 {
 		body.ID = uuid.NewString()
 	}
-	if body.TimeStamp.IsZero() {
-		body.TimeStamp = time.Now()
-	}
+	body.TimeStamp = time.Now().UTC()
+
 	return body.ID, l.tm.push(&event{
 		ID:   uuid.NewString(),
 		Type: EventTypeTraceCreate,
