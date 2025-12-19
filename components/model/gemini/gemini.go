@@ -24,10 +24,10 @@ import (
 	"log"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/eino-contrib/jsonschema"
-	"github.com/getkin/kin-openapi/openapi3"
 	"google.golang.org/genai"
 
 	"github.com/cloudwego/eino/callbacks"
@@ -63,11 +63,13 @@ func NewChatModel(_ context.Context, cfg *Config) (*ChatModel, error) {
 		temperature:         cfg.Temperature,
 		topP:                cfg.TopP,
 		topK:                cfg.TopK,
-		responseSchema:      cfg.ResponseSchema,
+		responseJSONSchema:  cfg.ResponseJSONSchema,
 		enableCodeExecution: cfg.EnableCodeExecution,
 		safetySettings:      cfg.SafetySettings,
 		thinkingConfig:      cfg.ThinkingConfig,
 		responseModalities:  cfg.ResponseModalities,
+		mediaResolution:     cfg.MediaResolution,
+		cache:               cfg.Cache,
 	}, nil
 }
 
@@ -99,9 +101,9 @@ type Config struct {
 	// Optional. Example: topK := int32(40)
 	TopK *int32
 
-	// ResponseSchema defines the structure for JSON responses
+	// ResponseJSONSchema defines the structure for JSON responses
 	// Optional. Used when you want structured output in JSON format
-	ResponseSchema *openapi3.Schema
+	ResponseJSONSchema *jsonschema.Schema
 
 	// EnableCodeExecution allows the model to execute code
 	// Warning: Be cautious with code execution in production
@@ -118,6 +120,20 @@ type Config struct {
 	// ResponseModalities specifies the modalities the model can return.
 	// Optional.
 	ResponseModalities []GeminiResponseModality
+
+	MediaResolution genai.MediaResolution
+
+	// Cache controls prefix cache settings for the model.
+	// Optional. used to CreatePrefixCache for reused inputs.
+	Cache *CacheConfig
+}
+
+// CacheConfig controls prefix cache settings for the model.
+type CacheConfig struct {
+	// TTL specifies how long cached resources remain valid (now + TTL).
+	TTL time.Duration `json:"ttl,omitempty"`
+	// ExpireTime sets the absolute expiration timestamp for cached resources.
+	ExpireTime time.Time `json:"expireTime,omitempty"`
 }
 
 type ChatModel struct {
@@ -128,7 +144,7 @@ type ChatModel struct {
 	topP                *float32
 	temperature         *float32
 	topK                *int32
-	responseSchema      *openapi3.Schema
+	responseJSONSchema  *jsonschema.Schema
 	tools               []*genai.FunctionDeclaration
 	origTools           []*schema.ToolInfo
 	toolChoice          *schema.ToolChoice
@@ -136,6 +152,8 @@ type ChatModel struct {
 	safetySettings      []*genai.SafetySetting
 	thinkingConfig      *genai.ThinkingConfig
 	responseModalities  []GeminiResponseModality
+	mediaResolution     genai.MediaResolution
+	cache               *CacheConfig
 }
 
 func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (message *schema.Message, err error) {
@@ -143,6 +161,9 @@ func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts
 	ctx = callbacks.EnsureRunInfo(ctx, cm.GetType(), components.ComponentOfChatModel)
 
 	modelName, nInput, genaiConf, cbConf, err := cm.genInputAndConf(input, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("genInputAndConf for Generate failed: %w", err)
+	}
 
 	co := model.GetCommonOptions(&model.Options{
 		Tools:      cm.origTools,
@@ -188,7 +209,7 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 
 	modelName, nInput, genaiConf, cbConf, err := cm.genInputAndConf(input, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("genInputAndConf for Stream failed: %w", err)
 	}
 
 	co := model.GetCommonOptions(&model.Options{
@@ -299,6 +320,46 @@ func (cm *ChatModel) BindForcedTools(tools []*schema.ToolInfo) error {
 	return nil
 }
 
+// CreatePrefixCache assembles inputs the same as Generate/Stream and writes
+// the final system instruction, tools, and messages into a reusable prefix cache.
+func (cm *ChatModel) CreatePrefixCache(ctx context.Context, prefixMsgs []*schema.Message, opts ...model.Option) (
+	*genai.CachedContent, error) {
+
+	modelName, inputMsgs, genaiConf, _, err := cm.genInputAndConf(prefixMsgs, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("genInputAndConf for CreatePrefixCache failed: %w", err)
+	}
+
+	contents, err := cm.convSchemaMessages(inputMsgs)
+	if err != nil {
+		return nil, err
+	}
+
+	cachedContent, err := cm.cli.Caches.Create(ctx, modelName, &genai.CreateCachedContentConfig{
+		Contents:          contents,
+		SystemInstruction: genaiConf.SystemInstruction,
+		Tools:             genaiConf.Tools,
+		ToolConfig:        genaiConf.ToolConfig,
+		TTL: func() time.Duration {
+			if cm.cache != nil {
+				return cm.cache.TTL
+			}
+			return 0
+		}(),
+		ExpireTime: func() time.Time {
+			if cm.cache != nil {
+				return cm.cache.ExpireTime
+			}
+			return time.Time{}
+		}(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create cache failed: %w", err)
+	}
+
+	return cachedContent, nil
+}
+
 func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Option) (string, []*schema.Message, *genai.GenerateContentConfig, *model.Config, error) {
 	commonOptions := model.GetCommonOptions(&model.Options{
 		Temperature: cm.temperature,
@@ -309,7 +370,7 @@ func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Opti
 	}, opts...)
 	geminiOptions := model.GetImplSpecificOptions(&options{
 		TopK:               cm.topK,
-		ResponseSchema:     cm.responseSchema,
+		ResponseJSONSchema: cm.responseJSONSchema,
 		ResponseModalities: cm.responseModalities,
 	}, opts...)
 	conf := &model.Config{}
@@ -343,6 +404,8 @@ func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Opti
 			CodeExecution: &genai.ToolCodeExecution{},
 		})
 	}
+
+	m.MediaResolution = cm.mediaResolution
 
 	if commonOptions.MaxTokens != nil {
 		conf.MaxTokens = *commonOptions.MaxTokens
@@ -383,17 +446,10 @@ func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Opti
 		topK := float32(*geminiOptions.TopK)
 		m.TopK = &topK
 	}
-	if geminiOptions.ResponseSchema != nil {
+
+	if geminiOptions.ResponseJSONSchema != nil {
 		m.ResponseMIMEType = "application/json"
-		var err error
-		if geminiOptions.ResponseJSONSchema != nil {
-			m.ResponseJsonSchema = geminiOptions.ResponseJSONSchema
-		} else if geminiOptions.ResponseSchema != nil {
-			m.ResponseSchema, err = cm.convOpenAPIV3SchemaGeminiSchema(geminiOptions.ResponseSchema)
-		}
-		if err != nil {
-			return "", nil, nil, nil, fmt.Errorf("convert response schema fail: %w", err)
-		}
+		m.ResponseJsonSchema = geminiOptions.ResponseJSONSchema
 	}
 
 	if len(geminiOptions.ResponseModalities) > 0 {
@@ -418,6 +474,14 @@ func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Opti
 	if geminiOptions.ThinkingConfig != nil {
 		m.ThinkingConfig = geminiOptions.ThinkingConfig
 	}
+
+	if len(geminiOptions.CachedContentName) > 0 {
+		m.CachedContent = geminiOptions.CachedContentName
+		// remove system instruction and tools when using cached content
+		m.SystemInstruction = nil
+		m.Tools = nil
+		m.ToolConfig = nil
+	}
 	return conf.Model, nInput, m, conf, nil
 }
 
@@ -429,13 +493,10 @@ func (cm *ChatModel) toGeminiTools(tools []*schema.ToolInfo) ([]*genai.FunctionD
 			Description: tool.Desc,
 		}
 
-		js, err := tool.ToJSONSchema()
+		var err error
+		funcDecl.ParametersJsonSchema, err = tool.ToJSONSchema()
 		if err != nil {
-			return nil, fmt.Errorf("get open schema fail: %w", err)
-		}
-		funcDecl.Parameters, err = cm.convJSONSchemaToGeminiSchema(js)
-		if err != nil {
-			return nil, fmt.Errorf("convert open schema fail: %w", err)
+			return nil, fmt.Errorf("convert to json schema fail: %w", err)
 		}
 
 		gTools[i] = funcDecl
@@ -444,197 +505,71 @@ func (cm *ChatModel) toGeminiTools(tools []*schema.ToolInfo) ([]*genai.FunctionD
 	return gTools, nil
 }
 
-func (cm *ChatModel) convJSONSchemaToGeminiSchema(js *jsonschema.Schema) (*genai.Schema, error) {
-	if js == nil {
-		return nil, nil
+// convToolMessageToPart converts a tool response message into a Gemini part.
+func (cm *ChatModel) convToolMessageToPart(message *schema.Message) (*genai.Part, error) {
+	if message.Role != schema.Tool {
+		return nil, fmt.Errorf("expected tool message, got %s", message.Role)
 	}
 
-	oType := genai.Type("")
-	switch js.Type {
-	case string(schema.String):
-		oType = genai.TypeString
-	case string(schema.Number):
-		oType = genai.TypeNumber
-	case string(schema.Integer):
-		oType = genai.TypeInteger
-	case string(schema.Boolean):
-		oType = genai.TypeBoolean
-	case string(schema.Object):
-		oType = genai.TypeObject
-	case string(schema.Array):
-		oType = genai.TypeArray
-	case string(schema.Null):
-		oType = genai.TypeNULL
+	response := make(map[string]any)
+	err := sonic.UnmarshalString(message.Content, &response)
+	if err != nil {
+		response = map[string]any{"output": message.Content}
 	}
 
-	sc := &genai.Schema{
-		Type:        oType,
-		Title:       js.Title,
-		Format:      js.Format,
-		Description: js.Description,
-		Default:     js.Default,
-		Pattern:     js.Pattern,
-	}
-
-	if js.MaxLength != nil {
-		sc.MaxLength = genai.Ptr(int64(*js.MaxLength))
-	}
-
-	if js.MinLength != nil {
-		sc.MinLength = genai.Ptr(int64(*js.MinLength))
-	}
-
-	if js.MaxItems != nil {
-		sc.MaxItems = genai.Ptr(int64(*js.MaxItems))
-	}
-
-	if js.MinItems != nil {
-		sc.MinItems = genai.Ptr(int64(*js.MinItems))
-	}
-
-	if js.MinProperties != nil {
-		sc.MinProperties = genai.Ptr(int64(*js.MinProperties))
-	}
-
-	if js.MaxProperties != nil {
-		sc.MaxProperties = genai.Ptr(int64(*js.MaxProperties))
-	}
-
-	if len(js.Examples) > 0 {
-		sc.Example = js.Examples[0]
-	}
-
-	if js.AnyOf != nil {
-		sc.AnyOf = make([]*genai.Schema, len(js.AnyOf))
-		for i, anyOf := range js.AnyOf {
-			v, err := cm.convJSONSchemaToGeminiSchema(anyOf)
-			if err != nil {
-				return nil, err
-			}
-			sc.AnyOf[i] = v
-		}
-	}
-
-	if js.Enum != nil {
-		sc.Enum = make([]string, len(js.Enum))
-		for i, enum := range js.Enum {
-			enum_, ok := enum.(string)
-			if !ok {
-				return nil, fmt.Errorf("enum must be string")
-			}
-			sc.Enum[i] = enum_
-		}
-	}
-
-	if js.Items != nil {
-		v, err := cm.convJSONSchemaToGeminiSchema(js.Items)
-		if err != nil {
-			return nil, err
-		}
-		sc.Items = v
-	}
-
-	if js.Properties != nil {
-		sc.Properties = make(map[string]*genai.Schema, js.Properties.Len())
-		for pair := js.Properties.Oldest(); pair != nil; pair = pair.Next() {
-			v, err := cm.convJSONSchemaToGeminiSchema(pair.Value)
-			if err != nil {
-				return nil, err
-			}
-			sc.Properties[pair.Key] = v
-		}
-	}
-
-	if js.Required != nil {
-		sc.Required = make([]string, len(js.Required))
-		for i, required := range js.Required {
-			sc.Required[i] = required
-		}
-	}
-
-	return sc, nil
-}
-
-func (cm *ChatModel) convOpenAPIV3SchemaGeminiSchema(schema *openapi3.Schema) (*genai.Schema, error) {
-	if schema == nil {
-		return nil, nil
-	}
-	var err error
-
-	result := &genai.Schema{
-		Format:      schema.Format,
-		Description: schema.Description,
-	}
-	if schema.Nullable {
-		result.Nullable = &schema.Nullable
-	}
-
-	switch schema.Type {
-	case openapi3.TypeObject:
-		result.Type = genai.TypeObject
-		if schema.Properties != nil {
-			properties := make(map[string]*genai.Schema)
-			for name, prop := range schema.Properties {
-				if prop == nil || prop.Value == nil {
-					continue
-				}
-				properties[name], err = cm.convOpenAPIV3SchemaGeminiSchema(prop.Value)
-				if err != nil {
-					return nil, err
-				}
-			}
-			result.Properties = properties
-		}
-		if schema.Required != nil {
-			result.Required = schema.Required
-		}
-
-	case openapi3.TypeArray:
-		result.Type = genai.TypeArray
-		if schema.Items != nil && schema.Items.Value != nil {
-			result.Items, err = cm.convOpenAPIV3SchemaGeminiSchema(schema.Items.Value)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-	case openapi3.TypeString:
-		result.Type = genai.TypeString
-		if schema.Enum != nil {
-			enums := make([]string, 0, len(schema.Enum))
-			for _, e := range schema.Enum {
-				if str, ok := e.(string); ok {
-					enums = append(enums, str)
-				} else {
-					return nil, fmt.Errorf("enum value must be a string, schema: %+v", schema)
-				}
-			}
-			result.Enum = enums
-		}
-
-	case openapi3.TypeNumber:
-		result.Type = genai.TypeNumber
-	case openapi3.TypeInteger:
-		result.Type = genai.TypeInteger
-	case openapi3.TypeBoolean:
-		result.Type = genai.TypeBoolean
-	default:
-		result.Type = genai.TypeUnspecified
-	}
-
-	return result, nil
+	return genai.NewPartFromFunctionResponse(message.ToolCallID, response), nil
 }
 
 func (cm *ChatModel) convSchemaMessages(messages []*schema.Message) ([]*genai.Content, error) {
-	result := make([]*genai.Content, len(messages))
-	for i, message := range messages {
+	var result []*genai.Content
+
+	for i := 0; i < len(messages); i++ {
+		message := messages[i]
+		if message == nil {
+			continue
+		}
+
 		content, err := cm.convSchemaMessage(message)
 		if err != nil {
-			return nil, fmt.Errorf("convert schema message fail: %w", err)
+			return nil, fmt.Errorf("convert schema message fail at index %d: %w", i, err)
 		}
-		result[i] = content
+		if content != nil {
+			result = append(result, content)
+		}
 	}
-	return result, nil
+
+	return mergeAdjacentToolContents(result), nil
+}
+
+// mergeAdjacentToolContents merges adjacent tool response contents into a single content.
+// Gemini requires all tool responses to be in a single message when responding to parallel tool calls.
+func mergeAdjacentToolContents(contents []*genai.Content) []*genai.Content {
+	if len(contents) <= 1 {
+		return contents
+	}
+
+	result := make([]*genai.Content, 0, len(contents))
+
+	for _, content := range contents {
+		// Check if current content is a tool response (has FunctionResponse parts)
+		if len(result) > 0 && isToolResponseContent(content) && isToolResponseContent(result[len(result)-1]) {
+			// Merge into the previous content
+			result[len(result)-1].Parts = append(result[len(result)-1].Parts, content.Parts...)
+		} else {
+			result = append(result, content)
+		}
+	}
+
+	return result
+}
+
+// isToolResponseContent checks if a content contains tool response parts.
+func isToolResponseContent(content *genai.Content) bool {
+	if content == nil || len(content.Parts) == 0 {
+		return false
+	}
+	// Check if the first part is a FunctionResponse
+	return content.Parts[0].FunctionResponse != nil
 }
 
 func (cm *ChatModel) convSchemaMessage(message *schema.Message) (*genai.Content, error) {
@@ -642,64 +577,97 @@ func (cm *ChatModel) convSchemaMessage(message *schema.Message) (*genai.Content,
 		return nil, nil
 	}
 
+	if message.Role == schema.Tool {
+		part, err := cm.convToolMessageToPart(message)
+		if err != nil {
+			return nil, err
+		}
+		return &genai.Content{
+			Role:  roleUser,
+			Parts: []*genai.Part{part},
+		}, nil
+	}
+
 	content := &genai.Content{
 		Role: toGeminiRole(message.Role),
 	}
 
+	// Restore reasoning content as a thought part (required for gemini-3-pro-preview and later)
+	if message.ReasoningContent != "" {
+		thoughtPart := &genai.Part{
+			Text:    message.ReasoningContent,
+			Thought: true,
+		}
+		content.Parts = append(content.Parts, thoughtPart)
+	}
+
 	if message.ToolCalls != nil {
-		for _, call := range message.ToolCalls {
+		for i := range message.ToolCalls {
+			call := &message.ToolCalls[i]
 			args := make(map[string]any)
 			err := sonic.UnmarshalString(call.Function.Arguments, &args)
 			if err != nil {
 				return nil, fmt.Errorf("unmarshal schema tool call arguments to map[string]any fail: %w", err)
 			}
-			content.Parts = append(content.Parts, genai.NewPartFromFunctionCall(call.Function.Name, args))
+
+			part := genai.NewPartFromFunctionCall(call.Function.Name, args)
+			// Restore thought signature on the functionCall part if present.
+			// Per Gemini docs (https://cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures):
+			// - Signatures must be returned exactly as received on functionCall parts
+			// - For parallel calls: only first functionCall has signature
+			// - For sequential calls: each functionCall has its own signature
+			// - Omitting required signature causes 400 error on Gemini 3 Pro
+			if sig := getToolCallThoughtSignature(call); len(sig) > 0 {
+				part.ThoughtSignature = sig
+			}
+			content.Parts = append(content.Parts, part)
 		}
 	}
 
-	if message.Role == schema.Tool {
-		response := make(map[string]any)
-		err := sonic.UnmarshalString(message.Content, &response)
+	if len(message.UserInputMultiContent) > 0 && len(message.AssistantGenMultiContent) > 0 {
+		return nil, fmt.Errorf("a message cannot contain both UserInputMultiContent and AssistantGenMultiContent")
+	}
+	if len(message.UserInputMultiContent) > 0 {
+		if message.Role != schema.User {
+			return nil, fmt.Errorf("user input multi content only support user role, got %s", message.Role)
+		}
+		parts, err := cm.convInputMedia(message.UserInputMultiContent)
 		if err != nil {
-			response["output"] = message.Content
+			return nil, err
 		}
-		content.Parts = append(content.Parts, genai.NewPartFromFunctionResponse(message.ToolCallID, response))
-	} else {
-		if len(message.UserInputMultiContent) > 0 && len(message.AssistantGenMultiContent) > 0 {
-			return nil, fmt.Errorf("a message cannot contain both UserInputMultiContent and AssistantGenMultiContent")
+		content.Parts = append(content.Parts, parts...)
+		return content, nil
+	} else if len(message.AssistantGenMultiContent) > 0 {
+		if message.Role != schema.Assistant {
+			return nil, fmt.Errorf("assistant gen multi content only support assistant role, got %s", message.Role)
 		}
-		if len(message.UserInputMultiContent) > 0 {
-			if message.Role != schema.User {
-				return nil, fmt.Errorf("user input multi content only support user role, got %s", message.Role)
-			}
-			parts, err := cm.convInputMedia(message.UserInputMultiContent)
-			if err != nil {
-				return nil, err
-			}
-			content.Parts = append(content.Parts, parts...)
-			return content, nil
-		} else if len(message.AssistantGenMultiContent) > 0 {
-			if message.Role != schema.Assistant {
-				return nil, fmt.Errorf("assistant gen multi content only support assistant role, got %s", message.Role)
-			}
-			parts, err := cm.convOutputMedia(message.AssistantGenMultiContent)
-			if err != nil {
-				return nil, err
-			}
-			content.Parts = append(content.Parts, parts...)
-			return content, nil
+		parts, err := cm.convOutputMedia(message.AssistantGenMultiContent)
+		if err != nil {
+			return nil, err
 		}
-		if message.Content != "" {
-			content.Parts = append(content.Parts, genai.NewPartFromText(message.Content))
-		}
-		if message.MultiContent != nil {
-			log.Printf("MultiContent field is deprecated, please use UserInputMultiContent or AssistantGenMultiContent instead")
-			parts, err := cm.convMedia(message.MultiContent)
-			if err != nil {
-				return nil, err
+		content.Parts = append(content.Parts, parts...)
+		return content, nil
+	}
+	if message.Content != "" {
+		textPart := genai.NewPartFromText(message.Content)
+		// For non-functionCall responses, restore thought signature on the final text part.
+		// Per Gemini docs (https://cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures):
+		// - The final Part (text, inlineData, etc.) may contain a thought_signature
+		// - Returning this signature is recommended for best performance but not strictly required
+		if len(message.ToolCalls) == 0 {
+			if sig := getMessageThoughtSignature(message); len(sig) > 0 {
+				textPart.ThoughtSignature = sig
 			}
-			content.Parts = parts
 		}
+		content.Parts = append(content.Parts, textPart)
+	}
+	if message.MultiContent != nil {
+		log.Printf("MultiContent field is deprecated, please use UserInputMultiContent or AssistantGenMultiContent instead")
+		parts, err := cm.convMedia(message.MultiContent)
+		if err != nil {
+			return nil, err
+		}
+		content.Parts = parts
 	}
 	return content, nil
 }
@@ -962,6 +930,9 @@ func (cm *ChatModel) convResponse(resp *genai.GenerateContentResponse) (*schema.
 			},
 			CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
 			TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
+			CompletionTokensDetails: schema.CompletionTokensDetails{
+				ReasoningTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
+			},
 		}
 	}
 	return message, nil
@@ -973,10 +944,10 @@ func (cm *ChatModel) convCandidate(candidate *genai.Candidate) (*schema.Message,
 		FinishReason: string(candidate.FinishReason),
 	}
 	if candidate.Content != nil {
-		if candidate.Content.Role == roleModel {
-			result.Role = schema.Assistant
-		} else {
+		if candidate.Content.Role == roleUser {
 			result.Role = schema.User
+		} else {
+			result.Role = schema.Assistant
 		}
 
 		var (
@@ -984,7 +955,18 @@ func (cm *ChatModel) convCandidate(candidate *genai.Candidate) (*schema.Message,
 			outParts       []schema.MessageOutputPart
 			contentBuilder strings.Builder
 		)
+		// Process parts and extract thought signatures per Gemini docs:
+		// https://cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures
+		//
+		// Signature placement rules:
+		// - functionCall parts: signature stored on ToolCall.Extra (required for Gemini 3 Pro)
+		// - non-functionCall parts (text, thought, inlineData): signature stored on Message.Extra
 		for _, part := range candidate.Content.Parts {
+			// Store thought signature at message level for non-functionCall parts
+			if len(part.ThoughtSignature) > 0 && part.FunctionCall == nil {
+				setMessageThoughtSignature(result, part.ThoughtSignature)
+			}
+
 			if part.Thought {
 				result.ReasoningContent = part.Text
 			} else if len(part.Text) > 0 {
@@ -996,9 +978,15 @@ func (cm *ChatModel) convCandidate(candidate *genai.Candidate) (*schema.Message,
 				})
 			}
 			if part.FunctionCall != nil {
-				fc, err := convFC(part.FunctionCall)
+				fc, err := convFC(part)
 				if err != nil {
 					return nil, err
+				}
+				// Store thought signature on the tool call if present
+				// Per Gemini docs: for parallel calls, only first functionCall has signature;
+				// for sequential calls, each functionCall has its own signature
+				if len(part.ThoughtSignature) > 0 {
+					setToolCallThoughtSignature(fc, part.ThoughtSignature)
 				}
 				result.ToolCalls = append(result.ToolCalls, *fc)
 			}
@@ -1065,18 +1053,26 @@ func toMultiOutPart(part *genai.Part) (schema.MessageOutputPart, error) {
 	return res, nil
 }
 
-func convFC(tp *genai.FunctionCall) (*schema.ToolCall, error) {
+func convFC(part *genai.Part) (*schema.ToolCall, error) {
+	if part == nil || part.FunctionCall == nil {
+		return nil, fmt.Errorf("part or function call is nil")
+	}
+
+	tp := part.FunctionCall
 	args, err := sonic.MarshalString(tp.Args)
 	if err != nil {
 		return nil, fmt.Errorf("marshal gemini tool call arguments fail: %w", err)
 	}
-	return &schema.ToolCall{
+
+	toolCall := &schema.ToolCall{
 		ID: tp.Name,
 		Function: schema.FunctionCall{
 			Name:      tp.Name,
 			Arguments: args,
 		},
-	}, nil
+	}
+
+	return toolCall, nil
 }
 
 func (cm *ChatModel) convCallbackOutput(message *schema.Message, conf *model.Config) *model.CallbackOutput {
@@ -1092,6 +1088,9 @@ func (cm *ChatModel) convCallbackOutput(message *schema.Message, conf *model.Con
 			},
 			CompletionTokens: message.ResponseMeta.Usage.CompletionTokens,
 			TotalTokens:      message.ResponseMeta.Usage.TotalTokens,
+			CompletionTokensDetails: model.CompletionTokensDetails{
+				ReasoningTokens: message.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens,
+			},
 		}
 	}
 	return callbackOutput
