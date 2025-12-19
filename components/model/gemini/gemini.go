@@ -19,6 +19,7 @@ package gemini
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -233,6 +234,9 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 	}
 
 	contents, err := cm.convSchemaMessages(nInput)
+	b, _ := json.MarshalIndent(contents, "", "  ")
+	fmt.Println("contents JSON:")
+	fmt.Println(string(b))
 	if err != nil {
 		return nil, fmt.Errorf("convert schema message fail: %w", err)
 	}
