@@ -927,10 +927,19 @@ func (cm *ChatModel) convResponse(resp *genai.GenerateContentResponse) (*schema.
 		if message.ResponseMeta == nil {
 			message.ResponseMeta = &schema.ResponseMeta{}
 		}
+		// Gemini's PromptTokenCount includes CachedContentTokenCount,
+		// so we need to separate them for accurate billing reporting.
+		// The actual input tokens (non-cached) = PromptTokenCount - CachedContentTokenCount
+		cachedTokens := int(resp.UsageMetadata.CachedContentTokenCount)
+		actualInputTokens := int(resp.UsageMetadata.PromptTokenCount) - cachedTokens
+		if actualInputTokens < 0 {
+			actualInputTokens = 0
+		}
 		message.ResponseMeta.Usage = &schema.TokenUsage{
-			PromptTokens: int(resp.UsageMetadata.PromptTokenCount),
+			PromptTokens: actualInputTokens,
 			PromptTokenDetails: schema.PromptTokenDetails{
-				CachedTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+				CachedTokens:         cachedTokens,
+				CacheReadInputTokens: cachedTokens,
 			},
 			CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
 			TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
@@ -1088,7 +1097,8 @@ func (cm *ChatModel) convCallbackOutput(message *schema.Message, conf *model.Con
 		callbackOutput.TokenUsage = &model.TokenUsage{
 			PromptTokens: message.ResponseMeta.Usage.PromptTokens,
 			PromptTokenDetails: model.PromptTokenDetails{
-				CachedTokens: message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+				CachedTokens:         message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+				CacheReadInputTokens: message.ResponseMeta.Usage.PromptTokenDetails.CacheReadInputTokens,
 			},
 			CompletionTokens: message.ResponseMeta.Usage.CompletionTokens,
 			TotalTokens:      message.ResponseMeta.Usage.TotalTokens,
