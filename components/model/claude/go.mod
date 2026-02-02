@@ -11,7 +11,6 @@ require (
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/stretchr/testify v1.10.0
 	github.com/wk8/go-ordered-map/v2 v2.1.8
-	golang.org/x/oauth2 v0.32.0
 )
 
 require (
@@ -77,9 +76,9 @@ require (
 	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/net v0.27.0 // indirect
-	golang.org/x/oauth2 v0.21.0 // indirect
+	golang.org/x/oauth2 v0.32.0 // indirect
 	golang.org/x/sync v0.15.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/api v0.189.0 // indirect
@@ -89,6 +88,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.4
+replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.5
 
 //replace github.com/cloudwego/eino => /Users/chenkang/GolandProjects/eino
