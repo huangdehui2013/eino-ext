@@ -19,7 +19,6 @@ package gemini
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
