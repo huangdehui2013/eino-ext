@@ -34,6 +34,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/vertex"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"golang.org/x/oauth2/google"
 
 	"github.com/cloudwego/eino/components"
 
@@ -64,25 +65,24 @@ var _ model.ToolCallingChatModel = (*ChatModel)(nil)
 func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 	var cli anthropic.Client
 	if config.ByVertex {
-		// Use Google Vertex AI
-		// Auto-detect project ID from config or environment variables
-		projectID := config.VertexProjectID
-		if projectID == "" {
-			projectID = getEnvWithFallbacks("ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT")
-		}
-		if projectID == "" {
-			return nil, errors.New("ByVertex is true but no project ID provided; set VertexProjectID or ANTHROPIC_VERTEX_PROJECT_ID")
+		// Initialize client for Anthropic on Vertex AI using Google ADC
+		if config.Region == "" {
+			return nil, fmt.Errorf("vertex requires Region to be set")
 		}
 
-		// Auto-detect region from config or environment variable
-		region := config.VertexRegion
-		if region == "" {
-			region = os.Getenv("CLOUD_ML_REGION")
+		creds, err := google.CredentialsFromJSON(ctx, config.JsonKey, "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create credentials: %v", err)
 		}
-		if region == "" {
-			return nil, errors.New("ByVertex is true but no region provided; set VertexRegion or CLOUD_ML_REGION")
+
+		var vopts []option.RequestOption
+		vopts = append(vopts, vertex.WithCredentials(ctx, config.Region, config.ProjectID, creds))
+		// Add Anthropic beta header if provided
+		if config.AnthropicBeta != "" {
+			vopts = append(vopts, option.WithHeaderAdd("anthropic-beta", config.AnthropicBeta))
 		}
-		cli = anthropic.NewClient(vertex.WithGoogleAuth(ctx, region, projectID))
+
+		cli = anthropic.NewClient(vopts...)
 	} else if config.ByBedrock {
 		// Use AWS Bedrock
 		var opts []func(*awsConfig.LoadOptions) error
