@@ -63,4 +63,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.5
+replace github.com/cloudwego/eino => github.com/huangdehui2013/eino v0.6.6
