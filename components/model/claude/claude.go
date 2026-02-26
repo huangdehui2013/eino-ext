@@ -553,6 +553,12 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 	if commonOptions.TopP != nil {
 		params.TopP = param.NewOpt(float64(*commonOptions.TopP))
 	}
+
+	outputConfigParam := anthropic.OutputConfigParam{
+		Effort: anthropic.OutputConfigEffortLow,
+	}
+	params.OutputConfig = outputConfigParam
+
 	if len(commonOptions.Stop) > 0 {
 		params.StopSequences = commonOptions.Stop
 	}
