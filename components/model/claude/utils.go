@@ -16,6 +16,39 @@
 
 package claude
 
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+var util utilHelper
+
+type utilHelper struct{}
+
+func (utilHelper) jsonStr(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%+v", v)
+	}
+
+	return string(b)
+}
+
+func (utilHelper) traceID(ctx context.Context) string {
+	if ctx != nil {
+		traceIDKeys := []string{"trace_id", "traceId", "traceID", "request_id", "requestId", "x-trace-id", "x-request-id"}
+		for _, k := range traceIDKeys {
+			if v := ctx.Value(k); v != nil {
+				return fmt.Sprintf("%v", v)
+			}
+		}
+	}
+
+	return fmt.Sprintf("local-%d", time.Now().UnixNano())
+}
+
 func of[T any](v T) *T {
 	return &v
 }
