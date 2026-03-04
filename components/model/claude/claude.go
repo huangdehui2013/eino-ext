@@ -275,6 +275,7 @@ type ChatModel struct {
 	topK                   *int32
 	topP                   *float32
 	thinking               *Thinking
+	Effort                 anthropic.OutputConfigEffort
 	tools                  []anthropic.ToolUnionParam
 	origTools              []*schema.ToolInfo
 	toolChoice             *schema.ToolChoice
@@ -559,7 +560,7 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 	}
 
 	outputConfigParam := anthropic.OutputConfigParam{
-		Effort: anthropic.OutputConfigEffortLow,
+		Effort: cm.Effort,
 	}
 	params.OutputConfig = outputConfigParam
 
