@@ -148,6 +148,7 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		topP:                   config.TopP,
 		disableParallelToolUse: config.DisableParallelToolUse,
 		cacheControl:           config.CacheControl,
+		Effort:                 config.Effort,
 	}, nil
 }
 
@@ -254,6 +255,8 @@ type Config struct {
 	AdditionalRequestFields map[string]any `json:"additional_request_fields"`
 
 	CacheControl bool `json:"cache_control"`
+
+	Effort anthropic.OutputConfigEffort
 
 	// AnthropicBeta sets the "anthropic-beta" header to enable beta features
 	// Example: "tools-2024-10-22, prompt-caching-2024-07-31"
