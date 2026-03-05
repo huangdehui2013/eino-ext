@@ -329,8 +329,6 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 	if err != nil {
 		return nil, err
 	}
-	traceID := util.traceID(ctx)
-	log.Printf("claude stream request params: traceId=%s input=%s opts=%s msgParam=%s", traceID, util.jsonStr(input), util.jsonStr(opts), util.jsonStr(msgParam))
 	stream := cm.cli.Messages.NewStreaming(ctx, msgParam)
 
 	// the stream error that occurred at this time should be terminated and returned.
@@ -354,7 +352,6 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 		for stream.Next() {
 			s := stream.Current()
 			idx := int(s.Index)
-			log.Printf("claude stream raw event: traceId=%s idx=%d event=%s", traceID, idx, util.jsonStr(s))
 			streamCtx.toolIndex = &idx
 			message, err_ := convStreamEvent(s, streamCtx)
 			if err_ != nil {
