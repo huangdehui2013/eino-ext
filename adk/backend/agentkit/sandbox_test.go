@@ -40,8 +40,8 @@ func TestNewArkSandbox(t *testing.T) {
 			SessionTTL:       3600,
 			ExecutionTimeout: 60,
 		}
-		ss, err := NewSandboxToolBackend(config)
-		s := ss.(*sandboxToolBackend)
+		s, err := NewSandboxToolBackend(config)
+
 		require.NoError(t, err)
 		require.NotNil(t, s)
 		assert.Equal(t, "test-ak", s.accessKeyID)
@@ -61,8 +61,8 @@ func TestNewArkSandbox(t *testing.T) {
 			ToolID:          "test-tool",
 			UserSessionID:   "test-session",
 		}
-		ss, err := NewSandboxToolBackend(config)
-		s := ss.(*sandboxToolBackend)
+		s, err := NewSandboxToolBackend(config)
+
 		require.NoError(t, err)
 		require.NotNil(t, s)
 		assert.Equal(t, RegionOfBeijing, s.region)
@@ -115,7 +115,7 @@ func TestNewArkSandbox(t *testing.T) {
 var mockAPIHandler http.HandlerFunc
 
 // setupTest creates a mock server and an ArkSandbox client configured to use it.
-func setupTest(t *testing.T) (*sandboxToolBackend, *httptest.Server) {
+func setupTest(t *testing.T) (*SandboxTool, *httptest.Server) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mockAPIHandler != nil {
 			mockAPIHandler(w, r)
@@ -131,8 +131,7 @@ func setupTest(t *testing.T) (*sandboxToolBackend, *httptest.Server) {
 		UserSessionID:   "test-session",
 		HTTPClient:      server.Client(),
 	}
-	ss, err := NewSandboxToolBackend(config)
-	sandbox := ss.(*sandboxToolBackend)
+	sandbox, err := NewSandboxToolBackend(config)
 	require.NoError(t, err)
 	sandbox.baseURL = server.URL // Override to point to the mock server
 
@@ -218,7 +217,7 @@ func TestArkSandbox_FileSystemMethods(t *testing.T) {
 		}
 		res, err := s.Read(context.Background(), &filesystem.ReadRequest{FilePath: "/data/file.txt"})
 		require.NoError(t, err)
-		assert.Equal(t, "hello world", res)
+		assert.Equal(t, "hello world", res.Content)
 	})
 
 	t.Run("Read: Failure - API Error", func(t *testing.T) {
@@ -233,7 +232,7 @@ func TestArkSandbox_FileSystemMethods(t *testing.T) {
 	// GrepRaw Tests
 	t.Run("GrepRaw: Success", func(t *testing.T) {
 		mockAPIHandler = func(w http.ResponseWriter, r *http.Request) {
-			grepOutput := `{"Path": "/data/file.txt", "Line": 1, "Content": "hello world"}`
+			grepOutput := `[{"Path": "/data/file.txt", "Line": 1, "Content": "hello world"}]`
 			w.WriteHeader(http.StatusOK)
 			w.Write(createMockResponse(t, true, grepOutput, "", ""))
 		}
@@ -318,5 +317,18 @@ func TestArkSandbox_FileSystemMethods(t *testing.T) {
 		_, err := s.Execute(context.Background(), &filesystem.ExecuteRequest{Command: "exit 1"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "command exited with non-zero code -1: command failed")
+	})
+
+	t.Run("Execute: RunInBackendGround returns immediately", func(t *testing.T) {
+		mockAPIHandler = func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write(createMockResponse(t, true, "command output", "", ""))
+		}
+		res, err := s.Execute(context.Background(), &filesystem.ExecuteRequest{
+			Command:            "sleep 10",
+			RunInBackendGround: true,
+		})
+		require.NoError(t, err)
+		assert.Contains(t, res.Output, "background")
 	})
 }

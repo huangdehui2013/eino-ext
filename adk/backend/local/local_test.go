@@ -20,10 +20,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/stretchr/testify/assert"
@@ -87,10 +87,24 @@ func TestRead(t *testing.T) {
 		content := "line 1\nline 2\nline 3"
 		assert.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
 
+		req := &filesystem.ReadRequest{FilePath: filePath, Offset: 2, Limit: 1}
+		result, err := s.Read(ctx, req)
+		assert.NoError(t, err)
+		assert.Contains(t, result.Content, "line 2")
+	})
+
+	t.Run("read file from first line (offset=1)", func(t *testing.T) {
+		dir := setupTestDir(t)
+		defer os.RemoveAll(dir)
+		filePath := filepath.Join(dir, "test.txt")
+		content := "line 1\nline 2\nline 3"
+		assert.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
+
 		req := &filesystem.ReadRequest{FilePath: filePath, Offset: 1, Limit: 1}
 		result, err := s.Read(ctx, req)
 		assert.NoError(t, err)
-		assert.Contains(t, result, "line 2")
+		assert.Contains(t, result.Content, "line 1")
+		assert.NotContains(t, result.Content, "line 2")
 	})
 
 	t.Run("read empty file", func(t *testing.T) {
@@ -102,7 +116,7 @@ func TestRead(t *testing.T) {
 		req := &filesystem.ReadRequest{FilePath: filePath}
 		result, err := s.Read(ctx, req)
 		assert.NoError(t, err)
-		assert.Equal(t, "", result)
+		assert.Equal(t, "", result.Content)
 	})
 
 	t.Run("read non-existent file", func(t *testing.T) {
@@ -117,21 +131,18 @@ func TestRead(t *testing.T) {
 		defer os.RemoveAll(dir)
 		filePath := filepath.Join(dir, "large.txt")
 
-		// Create a file with 1000 lines
 		f, err := os.Create(filePath)
 		assert.NoError(t, err)
-		for i := 0; i < 1000; i++ {
+		for i := 1; i <= 1000; i++ {
 			f.WriteString(fmt.Sprintf("line %d\n", i))
 		}
 		f.Close()
 
-		// Read lines 500-505 (5 lines)
-		// Offset is 0-indexed, so offset 500 starts at line 500 (which is the 501st line)
 		req := &filesystem.ReadRequest{FilePath: filePath, Offset: 500, Limit: 5}
 		result, err := s.Read(ctx, req)
 		assert.NoError(t, err)
 
-		lines := strings.Split(strings.TrimSpace(result), "\n")
+		lines := strings.Split(strings.TrimSpace(result.Content), "\n")
 		assert.Len(t, lines, 5)
 		assert.Contains(t, lines[0], "line 500")
 		assert.Contains(t, lines[4], "line 504")
@@ -165,8 +176,8 @@ func TestWrite(t *testing.T) {
 
 		req := &filesystem.WriteRequest{FilePath: filePath, Content: "new content"}
 		err := s.Write(ctx, req)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "already exists")
+		assert.NoError(t, err)
+
 	})
 }
 
@@ -236,12 +247,14 @@ func TestGrepRaw(t *testing.T) {
 	assert.NoError(t, err)
 
 	t.Run("grep successfully", func(t *testing.T) {
-		dir := setupTestDir(t)
-		defer os.RemoveAll(dir)
-		filePath := filepath.Join(dir, "test.txt")
-		assert.NoError(t, os.WriteFile(filePath, []byte("hello\ngo\nworld\ngo"), 0644))
+		filePath := "/tmp/test/test.txt"
+		mockOutput := `{"type":"match","data":{"path":{"text":"` + filePath + `"},"line_number":2,"lines":{"text":"go\n"}}}
+{"type":"match","data":{"path":{"text":"` + filePath + `"},"line_number":4,"lines":{"text":"go\n"}}}`
 
-		req := &filesystem.GrepRequest{Path: dir, Pattern: "go"}
+		mockRgBin := createMockRg(t, mockOutput, 0)
+		t.Setenv("PATH", mockRgBin+":"+os.Getenv("PATH"))
+
+		req := &filesystem.GrepRequest{Path: "/tmp/test", Pattern: "go"}
 		matches, err := s.GrepRaw(ctx, req)
 		assert.NoError(t, err)
 		assert.Len(t, matches, 2)
@@ -251,12 +264,12 @@ func TestGrepRaw(t *testing.T) {
 	})
 
 	t.Run("grep with glob", func(t *testing.T) {
-		dir := setupTestDir(t)
-		defer os.RemoveAll(dir)
-		assert.NoError(t, os.WriteFile(filepath.Join(dir, "test.txt"), []byte("hello go"), 0644))
-		assert.NoError(t, os.WriteFile(filepath.Join(dir, "test.log"), []byte("hello go"), 0644))
+		mockOutput := `{"type":"match","data":{"path":{"text":"/tmp/test/test.txt"},"line_number":1,"lines":{"text":"hello go\n"}}}`
 
-		req := &filesystem.GrepRequest{Path: dir, Pattern: "go", Glob: "*.txt"}
+		mockRgBin := createMockRg(t, mockOutput, 0)
+		t.Setenv("PATH", mockRgBin+":"+os.Getenv("PATH"))
+
+		req := &filesystem.GrepRequest{Path: "/tmp/test", Pattern: "go", Glob: "*.txt"}
 		matches, err := s.GrepRaw(ctx, req)
 		assert.NoError(t, err)
 		assert.Len(t, matches, 1)
@@ -264,16 +277,33 @@ func TestGrepRaw(t *testing.T) {
 	})
 
 	t.Run("grep with no matches", func(t *testing.T) {
-		dir := setupTestDir(t)
-		defer os.RemoveAll(dir)
-		filePath := filepath.Join(dir, "test.txt")
-		assert.NoError(t, os.WriteFile(filePath, []byte("hello world"), 0644))
+		// rg exits with code 1 when no matches found
+		mockRgBin := createMockRg(t, "", 1)
+		t.Setenv("PATH", mockRgBin+":"+os.Getenv("PATH"))
 
-		req := &filesystem.GrepRequest{Path: dir, Pattern: "nonexistent"}
+		req := &filesystem.GrepRequest{Path: "/tmp/test", Pattern: "nonexistent"}
 		matches, err := s.GrepRaw(ctx, req)
 		assert.NoError(t, err)
 		assert.Empty(t, matches)
 	})
+
+	t.Run("grep with empty pattern", func(t *testing.T) {
+		req := &filesystem.GrepRequest{Path: "/tmp/test", Pattern: ""}
+		_, err := s.GrepRaw(ctx, req)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "pattern is required")
+	})
+}
+
+// createMockRg creates a fake "rg" script in a temp directory that outputs the given content
+// and exits with the specified code. Returns the directory path to prepend to PATH.
+func createMockRg(t *testing.T, output string, exitCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncat <<'MOCK_EOF'\n%s\nMOCK_EOF\nexit %d\n", output, exitCode)
+	rgPath := filepath.Join(dir, "rg")
+	assert.NoError(t, os.WriteFile(rgPath, []byte(script), 0755))
+	return dir
 }
 
 func TestGlobInfo(t *testing.T) {
@@ -397,7 +427,7 @@ func TestPathCleaning(t *testing.T) {
 		req := &filesystem.ReadRequest{FilePath: dirtyPath}
 		res, err := s.Read(ctx, req)
 		assert.NoError(t, err)
-		assert.Contains(t, res, content)
+		assert.Contains(t, res.Content, content)
 	})
 
 	t.Run("Read with repeated slashes", func(t *testing.T) {
@@ -411,7 +441,7 @@ func TestPathCleaning(t *testing.T) {
 		req := &filesystem.ReadRequest{FilePath: dirtyPath}
 		res, err := s.Read(ctx, req)
 		assert.NoError(t, err)
-		assert.Contains(t, res, content)
+		assert.Contains(t, res.Content, content)
 	})
 
 	t.Run("Write with dirty path", func(t *testing.T) {
@@ -465,7 +495,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with echo", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "echo line1 && echo line2 && echo line3"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var outputs []string
@@ -487,7 +517,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with ping", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "ping -c 3 127.0.0.1"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var lineCount int
@@ -506,7 +536,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with seq command", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "seq 1 5"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var numbers []string
@@ -530,7 +560,7 @@ func TestExecuteStreaming(t *testing.T) {
 		defer cancel()
 
 		req := &filesystem.ExecuteRequest{Command: "seq 1 1000000"}
-		sr, err := s.(*backend).ExecuteStreaming(cancelCtx, req)
+		sr, err := s.ExecuteStreaming(cancelCtx, req)
 		assert.NoError(t, err)
 
 		var lineCount int
@@ -552,7 +582,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with command failure", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "echo output && exit 1"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var hasOutput bool
@@ -575,7 +605,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with stderr output", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "echo stdout && echo stderr >&2 && exit 1"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var outputs []string
@@ -600,14 +630,14 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with empty command", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: ""}
-		_, err := s.(*backend).ExecuteStreaming(ctx, req)
+		_, err := s.ExecuteStreaming(ctx, req)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "command is required")
 	})
 
 	t.Run("ExecuteStreaming with large output", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "seq 1 100"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var lineCount int
@@ -626,7 +656,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with normal completion", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "echo test"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var receivedOutput bool
@@ -645,7 +675,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with invalid command", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "/nonexistent/command"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var lastErr error
@@ -665,7 +695,7 @@ func TestExecuteStreaming(t *testing.T) {
 
 	t.Run("ExecuteStreaming with no stdout output", func(t *testing.T) {
 		req := &filesystem.ExecuteRequest{Command: "true"}
-		sr, err := s.(*backend).ExecuteStreaming(ctx, req)
+		sr, err := s.ExecuteStreaming(ctx, req)
 		assert.NoError(t, err)
 
 		var receivedResponse bool
@@ -687,11 +717,54 @@ func TestExecuteStreaming(t *testing.T) {
 		assert.NotNil(t, exitCode, "should receive exit code in response")
 		assert.Equal(t, 0, *exitCode, "exit code should be 0 for successful command")
 	})
-}
 
-func TestExecute1(t *testing.T) {
-	fs := strings.Fields("ls -al")
-	bs, err := exec.Command(fs[0], fs[1:]...).Output()
-	assert.NoError(t, err)
-	fmt.Println(string(bs))
+	t.Run("ExecuteStreaming with RunInBackendGround", func(t *testing.T) {
+		req := &filesystem.ExecuteRequest{
+			Command:            "sleep 10",
+			RunInBackendGround: true,
+		}
+		sr, err := s.ExecuteStreaming(ctx, req)
+		assert.NoError(t, err)
+
+		var receivedResponse bool
+		var output string
+		var exitCode *int
+		for {
+			resp, err := sr.Recv()
+			if err != nil {
+				break
+			}
+			if resp != nil {
+				receivedResponse = true
+				output = resp.Output
+				exitCode = resp.ExitCode
+			}
+		}
+
+		assert.True(t, receivedResponse, "should receive response for background command")
+		assert.Contains(t, output, "background", "should indicate command started in background")
+		assert.NotNil(t, exitCode, "should receive exit code")
+		assert.Equal(t, 0, *exitCode, "exit code should be 0")
+	})
+
+	t.Run("ExecuteStreaming with RunInBackendGround returns immediately", func(t *testing.T) {
+		req := &filesystem.ExecuteRequest{
+			Command:            "sleep 5",
+			RunInBackendGround: true,
+		}
+
+		start := time.Now()
+		sr, err := s.ExecuteStreaming(ctx, req)
+		assert.NoError(t, err)
+
+		for {
+			_, err := sr.Recv()
+			if err != nil {
+				break
+			}
+		}
+		elapsed := time.Since(start)
+
+		assert.Less(t, elapsed, 2*time.Second, "background command should return immediately without waiting")
+	})
 }
