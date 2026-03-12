@@ -281,6 +281,7 @@ func (c *CallbackHandler) OnEnd(ctx context.Context, info *callbacks.RunInfo, ou
 				CompletionTokens: mcbo.TokenUsage.CompletionTokens,
 				TotalTokens:      mcbo.TokenUsage.TotalTokens,
 			}
+			body.UsageDetails = buildUsageDetails(mcbo.TokenUsage)
 		}
 
 		err := c.cli.EndGeneration(body)
@@ -543,6 +544,7 @@ func (c *CallbackHandler) OnEndWithStreamOutput(ctx context.Context, info *callb
 					CompletionTokens: usage.CompletionTokens,
 					TotalTokens:      usage.TotalTokens,
 				}
+				body.UsageDetails = buildUsageDetails(usage)
 			}
 
 			err = c.cli.EndGeneration(body)
@@ -634,4 +636,26 @@ func getName(info *callbacks.RunInfo) string {
 		return info.Name
 	}
 	return info.Type + string(info.Component)
+}
+
+func buildUsageDetails(usage *model.TokenUsage) map[string]int {
+	details := map[string]int{
+		"input":  usage.PromptTokens,
+		"output": usage.CompletionTokens,
+		"total":  usage.TotalTokens,
+	}
+	pd := usage.PromptTokenDetails
+	if pd.CachedTokens > 0 {
+		details["cached_tokens"] = pd.CachedTokens
+	}
+	if pd.CacheReadInputTokens > 0 {
+		details["cache_read_input_tokens"] = pd.CacheReadInputTokens
+	}
+	if pd.CacheCreationInputTokens > 0 {
+		details["cache_creation_input_tokens"] = pd.CacheCreationInputTokens
+	}
+	if usage.CompletionTokensDetails.ReasoningTokens > 0 {
+		details["reasoning_tokens"] = usage.CompletionTokensDetails.ReasoningTokens
+	}
+	return details
 }
