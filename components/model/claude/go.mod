@@ -3,7 +3,7 @@ module github.com/cloudwego/eino-ext/components/model/claude
 go 1.24.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.26.0
+	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/aws/aws-sdk-go-v2/config v1.29.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.54
 	github.com/bytedance/mockey v1.2.13
