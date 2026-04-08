@@ -107,8 +107,12 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		// Use direct Anthropic API
 		var opts []option.RequestOption
 
-		opts = append(opts, option.WithAPIKey(config.APIKey))
-
+		if config.APIKey != "" {
+			opts = append(opts, option.WithAPIKey(config.APIKey))
+		}
+		if config.AuthToken != "" {
+			opts = append(opts, option.WithAuthToken(config.AuthToken))
+		}
 		if config.BaseURL != nil {
 			opts = append(opts, option.WithBaseURL(*config.BaseURL))
 		}
@@ -125,7 +129,11 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 			opts = append(opts, option.WithJSONSet(key, value))
 		}
 
-		cli = anthropic.NewClient(opts...)
+		if hasDirectAnthropicConfigAuth(config) {
+			cli = newDirectAnthropicClient(opts...)
+		} else {
+			cli = anthropic.NewClient(opts...)
+		}
 	}
 
 	// Auto-detect model from config or environment variable
@@ -137,6 +145,12 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		return nil, errors.New("no model specified; set Model config or ANTHROPIC_MODEL environment variable")
 	}
 
+	var enableAutoCache *bool
+	if config.CacheControl {
+		v := true
+		enableAutoCache = &v
+	}
+
 	return &ChatModel{
 		cli:                    cli,
 		maxTokens:              config.MaxTokens,
@@ -144,11 +158,11 @@ func NewChatModel(ctx context.Context, config *Config) (*ChatModel, error) {
 		stopSequences:          config.StopSequences,
 		temperature:            config.Temperature,
 		thinking:               config.Thinking,
+		effort:                 config.Effort,
 		topK:                   config.TopK,
 		topP:                   config.TopP,
 		disableParallelToolUse: config.DisableParallelToolUse,
-		cacheControl:           config.CacheControl,
-		Effort:                 config.Effort,
+		enableAutoCache:        enableAutoCache,
 	}, nil
 }
 
@@ -158,9 +172,6 @@ type Config struct {
 	// Required for Bedrock
 	ByBedrock bool
 
-	Vertex bool
-
-	JsonKey []byte
 	// AccessKey is your Bedrock API Access key
 	// Obtain from: https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html
 	// Optional for Bedrock
@@ -190,27 +201,41 @@ type Config struct {
 	// ByVertex indicates whether to use Google Vertex AI
 	ByVertex bool
 
+	// Vertex is an alias for ByVertex (used by the fork).
+	Vertex bool
+
 	// VertexProjectID is your Google Cloud project ID.
 	// If not set, auto-detected from environment variables:
 	// ANTHROPIC_VERTEX_PROJECT_ID, GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT
 	VertexProjectID string
+
+	// ProjectID is an alias for VertexProjectID (used by the fork).
+	ProjectID string
+
+	// JsonKey is the raw JSON service account key for Vertex AI auth.
+	JsonKey []byte
 
 	// VertexRegion is the Vertex AI region (e.g., "us-east5").
 	// If not set, auto-detected from CLOUD_ML_REGION environment variable.
 	// See: https://claude.ai/docs/en/google-vertex-ai
 	VertexRegion string
 
-	ProjectID string
+	// CacheControl enables automatic caching in API requests.
+	CacheControl bool
 
 	// BaseURL is the custom API endpoint URL
 	// Use this to specify a different API endpoint, e.g., for proxies or enterprise setups
 	// Optional. Example: "https://custom-claude-api.example.com"
 	BaseURL *string
 
-	// APIKey is your Anthropic API key
+	// APIKey is your Anthropic API key for direct Anthropic API access.
 	// Obtain from: https://console.anthropic.com/account/keys
-	// Required
+	// Optional when AuthToken is set.
 	APIKey string
+
+	// AuthToken is your Anthropic auth token for direct Anthropic API access.
+	// Optional when APIKey is set.
+	AuthToken string
 
 	// Model specifies which Claude model to use.
 	// If not set, auto-detected from ANTHROPIC_MODEL environment variable.
@@ -242,6 +267,11 @@ type Config struct {
 
 	Thinking *Thinking
 
+	// Effort controls how much thinking Claude does via the OutputConfig.Effort parameter.
+	// Valid values: "low", "medium", "high", "max". Empty means no effort override.
+	// Works with both adaptive thinking and standard mode.
+	Effort string `json:"effort"`
+
 	// HTTPClient specifies the client to send HTTP requests.
 	HTTPClient *http.Client `json:"http_client"`
 
@@ -254,18 +284,16 @@ type Config struct {
 	// The values of the map must be JSON serializable.
 	AdditionalRequestFields map[string]any `json:"additional_request_fields"`
 
-	CacheControl bool `json:"cache_control"`
-
-	Effort anthropic.OutputConfigEffort
-
 	// AnthropicBeta sets the "anthropic-beta" header to enable beta features
 	// Example: "tools-2024-10-22, prompt-caching-2024-07-31"
 	AnthropicBeta string `json:"anthropic_beta"`
 }
 
 type Thinking struct {
-	Enable       bool `json:"enable"`
-	BudgetTokens int  `json:"budget_tokens"`
+	Enable       bool   `json:"enable"`
+	Type         string `json:"type"`          // "enabled" (default) or "adaptive"
+	BudgetTokens int    `json:"budget_tokens"` // only used when Type="enabled"
+	Display      string `json:"display"`       // "summarized" (default) or "omitted"
 }
 
 type ChatModel struct {
@@ -278,13 +306,32 @@ type ChatModel struct {
 	topK                   *int32
 	topP                   *float32
 	thinking               *Thinking
-	Effort                 anthropic.OutputConfigEffort
+	effort                 string
+	enableAutoCache        *bool
 	tools                  []anthropic.ToolUnionParam
 	origTools              []*schema.ToolInfo
 	toolChoice             *schema.ToolChoice
 	disableParallelToolUse *bool
+}
 
-	cacheControl bool
+func hasDirectAnthropicConfigAuth(config *Config) bool {
+	return config.APIKey != "" || config.AuthToken != ""
+}
+
+func newDirectAnthropicClient(opts ...option.RequestOption) (r anthropic.Client) {
+	defaults := []option.RequestOption{option.WithEnvironmentProduction()}
+	if o, ok := os.LookupEnv("ANTHROPIC_BASE_URL"); ok {
+		defaults = append(defaults, option.WithBaseURL(o))
+	}
+	opts = append(defaults, opts...)
+
+	r = anthropic.Client{Options: opts}
+	r.Completions = anthropic.NewCompletionService(opts...)
+	r.Messages = anthropic.NewMessageService(opts...)
+	r.Models = anthropic.NewModelService(opts...)
+	r.Beta = anthropic.NewBetaService(opts...)
+
+	return
 }
 
 func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (message *schema.Message, err error) {
@@ -296,7 +343,7 @@ func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts
 		}
 	}()
 
-	msgParam, err := cm.genMessageNewParams(input, cm.cacheControl, opts...)
+	msgParam, err := cm.genMessageNewParams(input, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +372,7 @@ func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message, opts .
 		}
 	}()
 
-	msgParam, err := cm.genMessageNewParams(input, cm.cacheControl, opts...)
+	msgParam, err := cm.genMessageNewParams(input, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -456,6 +503,17 @@ func (cm *ChatModel) BindForcedTools(tools []*schema.ToolInfo) error {
 	return nil
 }
 
+// newCacheControlParam creates a CacheControlEphemeralParam from the given CacheControl.
+// If ctrl is nil or ctrl.TTL is empty, the returned param will have no TTL set,
+// which means the API will use its default TTL (5 minutes).
+func newCacheControlParam(ctrl *CacheControl) anthropic.CacheControlEphemeralParam {
+	p := anthropic.NewCacheControlEphemeralParam()
+	if ctrl != nil && ctrl.TTL != "" {
+		p.TTL = ctrl.TTL
+	}
+	return p
+}
+
 func toAnthropicToolParam(tools []*schema.ToolInfo) ([]anthropic.ToolUnionParam, error) {
 	if len(tools) == 0 {
 		return nil, nil
@@ -487,7 +545,7 @@ func toAnthropicToolParam(tools []*schema.ToolInfo) ([]anthropic.ToolUnionParam,
 		}
 
 		if isBreakpointTool(tool) {
-			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			toolParam.CacheControl = newCacheControlParam(getToolBreakpointCacheControl(tool))
 		}
 
 		result = append(result, anthropic.ToolUnionParam{OfTool: toolParam})
@@ -519,7 +577,7 @@ func preProcessMessages(input []*schema.Message) ([]*schema.Message, []*schema.M
 	return input[:userMsgIdx], input[userMsgIdx:], nil
 }
 
-func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl bool, opts ...model.Option) (
+func (cm *ChatModel) genMessageNewParams(input []*schema.Message, opts ...model.Option) (
 	anthropic.MessageNewParams, error) {
 	if len(input) == 0 {
 		return anthropic.MessageNewParams{}, fmt.Errorf("input is empty")
@@ -539,11 +597,15 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		Tools:       nil,
 		ToolChoice:  cm.toolChoice,
 	}, opts...)
-	specOptions := model.GetImplSpecificOptions(&options{
+	initOpts := &options{
 		TopK:                   cm.topK,
 		Thinking:               cm.thinking,
 		DisableParallelToolUse: cm.disableParallelToolUse,
-	}, opts...)
+	}
+	if cm.enableAutoCache != nil && *cm.enableAutoCache {
+		initOpts.AutoCacheControl = &CacheControl{}
+	}
+	specOptions := model.GetImplSpecificOptions(initOpts, opts...)
 
 	params := anthropic.MessageNewParams{}
 	if commonOptions.Model != nil {
@@ -559,11 +621,6 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		params.TopP = param.NewOpt(float64(*commonOptions.TopP))
 	}
 
-	outputConfigParam := anthropic.OutputConfigParam{
-		Effort: cm.Effort,
-	}
-	params.OutputConfig = outputConfigParam
-
 	if len(commonOptions.Stop) > 0 {
 		params.StopSequences = commonOptions.Stop
 	}
@@ -572,11 +629,32 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 	}
 
 	if specOptions.Thinking != nil && specOptions.Thinking.Enable {
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+		switch specOptions.Thinking.Type {
+		case "adaptive":
+			adaptive := &anthropic.ThinkingConfigAdaptiveParam{}
+			if specOptions.Thinking.Display != "" {
+				adaptive.Display = anthropic.ThinkingConfigAdaptiveDisplay(specOptions.Thinking.Display)
+			}
+			params.Thinking = anthropic.ThinkingConfigParamUnion{
+				OfAdaptive: adaptive,
+			}
+		default:
+			enabled := &anthropic.ThinkingConfigEnabledParam{
 				Type:         "enabled",
 				BudgetTokens: int64(specOptions.Thinking.BudgetTokens),
-			},
+			}
+			if specOptions.Thinking.Display != "" {
+				enabled.Display = anthropic.ThinkingConfigEnabledDisplay(specOptions.Thinking.Display)
+			}
+			params.Thinking = anthropic.ThinkingConfigParamUnion{
+				OfEnabled: enabled,
+			}
+		}
+	}
+
+	if cm.effort != "" {
+		params.OutputConfig = anthropic.OutputConfigParam{
+			Effort: anthropic.OutputConfigEffort(cm.effort),
 		}
 	}
 
@@ -584,34 +662,28 @@ func (cm *ChatModel) genMessageNewParams(input []*schema.Message, cacheControl b
 		return anthropic.MessageNewParams{}, err
 	}
 
-	if err = cm.populateInput(&params, cacheControl, system, msgs, specOptions); err != nil {
+	if err = cm.populateInput(&params, system, msgs, specOptions); err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
 
 	return params, nil
 }
 
-func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, cacheControl bool, system []*schema.Message, msgs []*schema.Message, specOptions *options) error {
+func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, system []*schema.Message, msgs []*schema.Message, specOptions *options) error {
 	// populate system messages
 	hasSetSysBreakPoint := false
 	for _, m := range system {
 		block := anthropic.TextBlockParam{Text: m.Content}
 		if isBreakpointMessage(m) {
 			hasSetSysBreakPoint = true
-			block.CacheControl = anthropic.NewCacheControlEphemeralParam()
-		}
-
-		if cacheControl {
-			block.CacheControl = anthropic.CacheControlEphemeralParam{
-				Type: "ephemeral",
-			}
+			block.CacheControl = newCacheControlParam(getMessageBreakpointCacheControl(m))
 		}
 		params.System = append(params.System, block)
 	}
 
 	// if no breakpoint has been set, a breakpoint will be set for the last system message
-	if len(params.System) > 0 && !hasSetSysBreakPoint && fromOrDefault(specOptions.EnableAutoCache, false) {
-		params.System[len(params.System)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+	if len(params.System) > 0 && !hasSetSysBreakPoint && specOptions.AutoCacheControl != nil {
+		params.System[len(params.System)-1].CacheControl = newCacheControlParam(specOptions.AutoCacheControl)
 	}
 
 	msgParams := make([]anthropic.MessageParam, 0, len(msgs))
@@ -630,10 +702,10 @@ func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, cacheCont
 		msgParams = append(msgParams, msgParam)
 	}
 
-	if !hasSetMsgBreakPoint && fromOrDefault(specOptions.EnableAutoCache, false) {
+	if !hasSetMsgBreakPoint && specOptions.AutoCacheControl != nil {
 		lastMsgParam := msgParams[len(msgParams)-1]
 		lastBlock := lastMsgParam.Content[len(lastMsgParam.Content)-1]
-		populateContentBlockBreakPoint(lastBlock)
+		populateContentBlockBreakPoint(lastBlock, specOptions.AutoCacheControl)
 	}
 
 	params.Messages = msgParams
@@ -651,7 +723,7 @@ func (cm *ChatModel) populateTools(params *anthropic.MessageNewParams, commonOpt
 		}
 	}
 
-	if len(tools) > 0 && fromOrDefault(specOptions.EnableAutoCache, false) {
+	if len(tools) > 0 && specOptions.AutoCacheControl != nil {
 		hasBreakpoint := false
 		for _, tool := range tools {
 			if ctrl := tool.GetCacheControl(); ctrl != nil && ctrl.Type != "" {
@@ -661,7 +733,7 @@ func (cm *ChatModel) populateTools(params *anthropic.MessageNewParams, commonOpt
 		}
 		// if no breakpoint has been set, a breakpoint will be set for the last tool
 		if !hasBreakpoint {
-			tools[len(tools)-1].OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			tools[len(tools)-1].OfTool.CacheControl = newCacheControlParam(specOptions.AutoCacheControl)
 		}
 	}
 
@@ -945,7 +1017,7 @@ func convSchemaMessage(message *schema.Message) (mp anthropic.MessageParam, err 
 	}
 
 	if len(messageParams) > 0 && isBreakpointMessage(message) {
-		populateContentBlockBreakPoint(messageParams[len(messageParams)-1])
+		populateContentBlockBreakPoint(messageParams[len(messageParams)-1], getMessageBreakpointCacheControl(message))
 	}
 
 	switch message.Role {
@@ -1016,21 +1088,22 @@ func convToolMultiContent(callID string, parts []schema.MessageInputPart) (anthr
 	return result, nil
 }
 
-func populateContentBlockBreakPoint(block anthropic.ContentBlockParamUnion) {
+func populateContentBlockBreakPoint(block anthropic.ContentBlockParamUnion, cacheCtrl *CacheControl) {
+	ctrl := newCacheControlParam(cacheCtrl)
 	if block.OfText != nil {
-		block.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfText.CacheControl = ctrl
 		return
 	}
 	if block.OfImage != nil {
-		block.OfImage.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfImage.CacheControl = ctrl
 		return
 	}
 	if block.OfToolResult != nil {
-		block.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfToolResult.CacheControl = ctrl
 		return
 	}
 	if block.OfToolUse != nil {
-		block.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfToolUse.CacheControl = ctrl
 		return
 	}
 }

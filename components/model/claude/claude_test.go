@@ -19,6 +19,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -33,7 +34,37 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+func TestDirectAnthropicAuthSelection(t *testing.T) {
+	t.Run("config auth exists", func(t *testing.T) {
+		clearAnthropicAuthEnv(t)
+		assert.True(t, hasDirectAnthropicConfigAuth(&Config{APIKey: "api-key"}))
+		assert.True(t, hasDirectAnthropicConfigAuth(&Config{AuthToken: "auth-token"}))
+		assert.True(t, hasDirectAnthropicConfigAuth(&Config{APIKey: "api-key", AuthToken: "auth-token"}))
+	})
+
+	t.Run("env auth exists", func(t *testing.T) {
+		clearAnthropicAuthEnv(t)
+		t.Setenv("ANTHROPIC_API_KEY", "env-api-key")
+		model, err := NewChatModel(context.Background(), &Config{
+			Model: "claude-3-opus-20240229",
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, model)
+	})
+
+	t.Run("missing auth still allows creation", func(t *testing.T) {
+		clearAnthropicAuthEnv(t)
+		model, err := NewChatModel(context.Background(), &Config{
+			Model: "claude-3-opus-20240229",
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, model)
+	})
+}
+
 func TestClaude(t *testing.T) {
+	clearAnthropicAuthEnv(t)
+
 	ctx := context.Background()
 	model, err := NewChatModel(ctx, &Config{
 		APIKey: "test-key",
@@ -217,6 +248,21 @@ func TestClaude(t *testing.T) {
 	})
 }
 
+func clearAnthropicAuthEnv(t *testing.T) {
+	t.Helper()
+	// Use os.Unsetenv to truly remove the env vars, since the SDK uses
+	// os.LookupEnv — an empty string is still "present".
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+		prev, existed := os.LookupEnv(key)
+		os.Unsetenv(key)
+		if existed {
+			t.Cleanup(func() { os.Setenv(key, prev) })
+		} else {
+			t.Cleanup(func() { os.Unsetenv(key) })
+		}
+	}
+}
+
 func TestConvStreamEvent(t *testing.T) {
 	streamCtx := &streamContext{}
 
@@ -345,19 +391,19 @@ func TestWithTools(t *testing.T) {
 
 func TestPopulateContentBlockBreakPoint(t *testing.T) {
 	block := anthropic.NewTextBlock("input")
-	populateContentBlockBreakPoint(block)
+	populateContentBlockBreakPoint(block, nil)
 	assert.NotEmpty(t, block.OfText.CacheControl.Type)
 
 	block = anthropic.NewImageBlock[anthropic.URLImageSourceParam](anthropic.URLImageSourceParam{})
-	populateContentBlockBreakPoint(block)
+	populateContentBlockBreakPoint(block, nil)
 	assert.NotEmpty(t, block.OfImage.CacheControl.Type)
 
 	block = anthropic.NewToolResultBlock("userID", "input", false)
-	populateContentBlockBreakPoint(block)
+	populateContentBlockBreakPoint(block, nil)
 	assert.NotEmpty(t, block.OfToolResult.CacheControl.Type)
 
 	block = anthropic.NewToolUseBlock("123", "input", "test_tool")
-	populateContentBlockBreakPoint(block)
+	populateContentBlockBreakPoint(block, nil)
 	assert.NotEmpty(t, block.OfToolUse.CacheControl.Type)
 }
 
@@ -760,5 +806,89 @@ func TestPopulateToolChoice(t *testing.T) {
 		err := populateToolChoice(params, options.ToolChoice, options.AllowedToolNames, nil)
 		assert.Error(t, err)
 		assert.Equal(t, "tool choice=unsupported not support", err.Error())
+	})
+}
+
+func TestCacheTTL(t *testing.T) {
+	t.Run("SetMessageBreakpoint without TTL", func(t *testing.T) {
+		msg := schema.UserMessage("hello")
+		bp := SetMessageBreakpoint(msg)
+		assert.True(t, isBreakpointMessage(bp))
+		ctrl := getMessageBreakpointCacheControl(bp)
+		assert.Nil(t, ctrl)
+	})
+
+	t.Run("SetMessageCacheControl with TTL", func(t *testing.T) {
+		msg := schema.UserMessage("hello")
+		bp := SetMessageCacheControl(msg, &CacheControl{TTL: CacheTTL1h})
+		assert.True(t, isBreakpointMessage(bp))
+		ctrl := getMessageBreakpointCacheControl(bp)
+		assert.Equal(t, CacheTTL1h, ctrl.TTL)
+	})
+
+	t.Run("SetToolInfoBreakpoint without TTL", func(t *testing.T) {
+		tool := &schema.ToolInfo{Name: "test"}
+		bp := SetToolInfoBreakpoint(tool)
+		assert.True(t, isBreakpointTool(bp))
+		ctrl := getToolBreakpointCacheControl(bp)
+		assert.Nil(t, ctrl)
+	})
+
+	t.Run("SetToolInfoCacheControl with TTL", func(t *testing.T) {
+		tool := &schema.ToolInfo{Name: "test"}
+		bp := SetToolInfoCacheControl(tool, &CacheControl{TTL: CacheTTL5m})
+		assert.True(t, isBreakpointTool(bp))
+		ctrl := getToolBreakpointCacheControl(bp)
+		assert.Equal(t, CacheTTL5m, ctrl.TTL)
+	})
+
+	t.Run("newCacheControlParam without TTL", func(t *testing.T) {
+		p := newCacheControlParam(nil)
+		assert.Equal(t, CacheTTL(""), p.TTL)
+		assert.NotEmpty(t, p.Type)
+	})
+
+	t.Run("newCacheControlParam with TTL", func(t *testing.T) {
+		p := newCacheControlParam(&CacheControl{TTL: CacheTTL1h})
+		assert.Equal(t, CacheTTL1h, p.TTL)
+		assert.NotEmpty(t, p.Type)
+	})
+
+	t.Run("newCacheControlParam with invalid TTL passthrough", func(t *testing.T) {
+		p := newCacheControlParam(&CacheControl{TTL: "invalid_ttl"})
+		assert.Equal(t, CacheTTL("invalid_ttl"), p.TTL)
+		assert.NotEmpty(t, p.Type)
+	})
+
+	t.Run("populateContentBlockBreakPoint with TTL", func(t *testing.T) {
+		block := anthropic.NewTextBlock("input")
+		populateContentBlockBreakPoint(block, &CacheControl{TTL: CacheTTL1h})
+		assert.NotEmpty(t, block.OfText.CacheControl.Type)
+		assert.Equal(t, CacheTTL1h, block.OfText.CacheControl.TTL)
+	})
+
+	t.Run("manual breakpoint TTL flows to params", func(t *testing.T) {
+		cm := &ChatModel{model: "test", maxTokens: 100}
+		msg := schema.UserMessage("hello")
+		sysMsg := schema.SystemMessage("system")
+		bpSys := SetMessageCacheControl(sysMsg, &CacheControl{TTL: CacheTTL1h})
+
+		params, err := cm.genMessageNewParams([]*schema.Message{bpSys, msg})
+		assert.NoError(t, err)
+		assert.Equal(t, CacheTTL1h, params.System[0].CacheControl.TTL)
+	})
+
+	t.Run("WithAutoCacheControl with TTL", func(t *testing.T) {
+		cm := &ChatModel{model: "test", maxTokens: 100}
+		msg := schema.UserMessage("hello")
+		sysMsg := schema.SystemMessage("system")
+
+		params, err := cm.genMessageNewParams(
+			[]*schema.Message{sysMsg, msg},
+			WithAutoCacheControl(&CacheControl{TTL: CacheTTL1h}),
+		)
+		assert.NoError(t, err)
+		// auto cache should set TTL on last system message
+		assert.Equal(t, CacheTTL1h, params.System[0].CacheControl.TTL)
 	})
 }
